@@ -46,14 +46,22 @@ def _known_dishes() -> list[str]:
 
 PARSER_PROMPT = f"""אתה מפענח בקשות לתכנון ארוחה. קרא את הבקשה והעבר אותה לכלי submit_request.
 
-- num_guests: מספר הסועדים הכולל. "אני ובעלי ו-3 ילדים" = 5. אם המספר לא נאמר במפורש אבל אפשר להסיק אותו -
-  הסק ורשום את ההנחה ב-assumptions. אם אין שום מידע - null (אל תנחש).
+- attendees: כל מי שאוכל בארוחה, בקבוצות - who (מי) ו-count (כמה). "אני מארחת את אחותי עם 3 ילדים" =
+  [{{"who": "אני", "count": 1}}, {{"who": "אחותי", "count": 1}}, {{"who": "הילדים של אחותי", "count": 3}}].
+  מי שכותב/ת את הבקשה אוכל/ת, אלא אם נאמר אחרת. כל אדם שמוזכר - גם הוא ב-attendees.
+  "X עם 2 ילדים" = X עצמו/ה וגם 2 הילדים. "הבן שלי", "בעלי" - של מי שכותב/ת: אדם נוסף, לא מהילדים של אחרים.
+  דוגמה: "אני ובעלי מארחים את אחי עם 2 ילדים, והבת שלנו" = אני 1, בעלי 1, אחי 1, הילדים של אחי 2, הבת שלנו 1.
+  אם נאמר רק מספר כולל ("12 איש") - קבוצה אחת: [{{"who": "סועדים", "count": 12}}].
+  אל תחבר בעצמך ואל תכתוב את הספירה ב-assumptions - הקוד מחבר ומציג את הפירוט.
+- num_guests: אותו סכום, אם אין attendees. אם אין שום מידע על מספר הסועדים - null (אל תנחש).
 - תקציב: ברירת המחדל היא תקציב כולל - budget_total ("300 שקל", "150₪", "תקציב 200").
   budget_per_guest רק אם כתוב במפורש שהסכום הוא לאדם ("40 ש"ח לאדם", "לסועד", "per person") - ואל תכפיל בעצמך.
   אם אין תקציב - שניהם null (אל תנחש). "עד 300" = 300 (תקרה).
 - budget_approximate: true אם התקציב נאמר בקירוב ("בערך 400", "בסביבות 400", "כ-400"). "עד 400" זה לא בקירוב.
 - guests: רק אנשים עם הגבלה או העדפה. name: השם שנאמר, או תיאור קצר ("אחות", "הבן של רונית").
   כמה אנשים עם אותה הגבלה בלי שמות ("חצי מהם צמחונים") - אפשר רשומה אחת.
+  counted_in: ה-who של הקבוצה ב-attendees שהאורח נספר בה (אחיין -> "הילדים של אחותי", "אני" -> "אני").
+  אורח שלא שייך לאף קבוצה ("הבן שלי") - הוסף לו קבוצה משלו ב-attendees.
 - allergies: רק מהרשימה: gluten (גלוטן, צליאק), eggs (ביצים), dairy (חלב, לקטוז), nuts (אגוזים, שקדים, אגוזי מלך),
   fish (דגים), peanuts (בוטנים - לא nuts!), sesame (שומשום, טחינה), soy (סויה).
   "לא אוכל גלוטן" / "רגיש ללקטוז" / "רגישות לסויה" נחשבים אלרגיה - בספק, עדיף להחמיר.
@@ -79,6 +87,8 @@ SUBMIT_TOOL = {"type": "function", "function": {
     "name": "submit_request",
     "description": "הבקשה המפוענחת",
     "parameters": {"type": "object", "properties": {
+        "attendees": {"type": "array", "items": {"type": "object", "properties": {
+            "who": {"type": "string"}, "count": {"type": "integer"}}, "required": ["who", "count"]}},
         "num_guests": {"type": ["integer", "null"]},
         "budget_total": {"type": ["number", "null"]},
         "budget_per_guest": {"type": ["number", "null"]},
@@ -86,6 +96,7 @@ SUBMIT_TOOL = {"type": "function", "function": {
         "kosher": {"type": "boolean"},
         "guests": {"type": "array", "items": {"type": "object", "properties": {
             "name": {"type": "string"},
+            "counted_in": {"type": "string"},
             "allergies": {"type": "array", "items": {"type": "string", "enum": list(ALLERGENS)}},
             "diet": {"type": ["string", "null"], "enum": [*DIETS, None]},
             "dislikes": {"type": "array", "items": {"type": "string"}},
@@ -288,15 +299,17 @@ class ParsedGoal:
     attempts: int = 0
     model: str | None = None                             # המודל שבפועל ענה
     changes: list[str] = field(default_factory=list)     # בעדכון: מה השתנה לעומת הבקשה הקודמת
+    attendees: list[dict] = field(default_factory=list)  # מי מגיע וכמה - מהם הקוד סופר את הסועדים
 
 
 def build_request(parsed: dict, approximate: bool = False, kosher: bool = False) -> tuple[dict | None, list[str]]:
     """
     מה-JSON של המודל לבקשה. מחזיר (בקשה, שדות חסרים).
-    הקוד - לא המודל - מחליט מה חסר, ומכפיל תקציב לאדם במספר הסועדים.
+    הקוד - לא המודל - מחליט מה חסר, סופר את הסועדים ומכפיל תקציב לאדם במספר הסועדים.
     ערכים לא תקינים עוברים כמו שהם, ו-MenuRequest.from_dict יסביר מה לא בסדר.
     """
-    num_guests = parsed.get("num_guests")
+    attendees = attendee_groups(parsed.get("attendees"))
+    num_guests = sum(g["count"] for g in attendees) if attendees else parsed.get("num_guests")
     if isinstance(num_guests, float) and num_guests.is_integer():
         num_guests = int(num_guests)
     total, per_guest = parsed.get("budget_total"), parsed.get("budget_per_guest")
@@ -333,6 +346,50 @@ def build_request(parsed: dict, approximate: bool = False, kosher: bool = False)
     if approximate and isinstance(budget, (int, float)) and budget > 0:
         request["target_budget"], request["budget"] = budget, round(budget * (1 + APPROX_MARGIN), 2)
     return request, []
+
+
+def attendee_groups(value) -> list[dict]:
+    """
+    הפירוט של מי מגיע, אם הוא תקין: רשימה של {who, count} עם count שלם וחיובי. אחרת - רשימה ריקה,
+    ואז משתמשים ב-num_guests של המודל. מודלים טועים בחיבור: בצ'אט, מודל פירט 9 אנשים וכתב 10,
+    ובפעם אחרת שכח את "הבן שלי" - לכן המודל רק מפרט, והקוד מחבר.
+    """
+    if not isinstance(value, list) or not value:
+        return []
+    groups = []
+    for g in value:
+        if not isinstance(g, dict) or not isinstance(g.get("who"), str):
+            return []
+        count = g.get("count")
+        if isinstance(count, float) and count.is_integer():
+            count = int(count)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            return []
+        groups.append({"who": g["who"].strip() or "סועדים", "count": count})
+    return groups
+
+
+def describe_attendees(groups: list[dict]) -> str:
+    """"אני 1 + אחותי 1 + הילדים של אחותי 3 = 5" - כדי שהמשתמש יראה בדיוק איך נספר."""
+    total = sum(g["count"] for g in groups)
+    parts = " + ".join(f"{g['who']} {g['count']}" for g in groups)
+    return f"ספרתי את הסועדים: {parts} = {total}"
+
+
+def uncounted_guests(parsed: dict, groups: list[dict]) -> list[str]:
+    """
+    אורח עם הגבלה או העדפה שהמודל שייך לקבוצה שלא קיימת בספירה. בצ'אט, המודל רשם "הבן שלי אוהב אגוזים"
+    ושכח לספור אותו - 8 סועדים במקום 9. כשהמודל צריך לומר לאיזו קבוצה כל אורח שייך, הפער מתגלה בקוד.
+    """
+    known = {g["who"] for g in groups}
+    return [f"'{g['name']}' שויך/ה לקבוצה '{g['counted_in']}', שאין ב-attendees - הוא/היא לא נספר/ה. "
+            f"הוסף קבוצה עבורו/ה, או שייך/י לקבוצה קיימת."
+            for g in parsed.get("guests") or []
+            if isinstance(g, dict) and isinstance(g.get("counted_in"), str) and g["counted_in"].strip()
+            and g["counted_in"].strip() not in known and isinstance(g.get("name"), str)]
+
+
+_COUNT_WORDS = re.compile(r"סועד|משתתפ|איש|אנשים|אורחים")
 
 
 def _unique_names(guests: list):
@@ -453,6 +510,9 @@ def _normalize_guest(guest: dict) -> dict:
 def _evaluate(text: str, parsed: dict, attempt: int, previous: ParsedGoal | None = None) -> ParsedGoal:
     """בודק פענוח אחד. warnings לא ריק = יש מה לתקן (ובניסיון האחרון - להציג למשתמש)."""
     parsed = normalize(parsed)
+    if previous is not None and not previous.attendees:
+        # לבקשה הקודמת אין פירוט (שיחה ישנה) - פירוט חדש יכול לכלול רק את מי שנוסף ("שרון 1"), אז סומכים על הסכום
+        parsed.pop("attendees", None)
     common = {"assumptions": list(parsed["assumptions"]),
               "unsupported": parsed["unsupported"] + detect_unsupported(text, parsed),
               "attempts": attempt}
@@ -462,6 +522,13 @@ def _evaluate(text: str, parsed: dict, attempt: int, previous: ParsedGoal | None
     approximate = budget_is_approximate(text, bool(parsed.get("budget_approximate")))
     kosher = kosher_requested(text, parsed.get("kosher") is True)
     request, missing = build_request(parsed, approximate, kosher)
+    attendees = attendee_groups(parsed.get("attendees"))
+    if attendees:
+        common["attendees"] = attendees
+        if len(attendees) > 1:
+            # ספירה שהמודל כתב בעצמו עלולה לסתור את הסכום האמיתי ("המשתתפים הם 10") - הפירוט של הקוד מחליף אותה
+            common["assumptions"] = [describe_attendees(attendees)] + [
+                a for a in common["assumptions"] if not (_COUNT_WORDS.search(a) and re.search(r"\d", a))]
     if missing:
         return ParsedGoal("needs_info", questions=[QUESTIONS[m] for m in missing], **common)
     if "target_budget" in request:
@@ -475,7 +542,7 @@ def _evaluate(text: str, parsed: dict, attempt: int, previous: ParsedGoal | None
             return ParsedGoal("error", error=str(e), **common)
         return ParsedGoal("ok", request=request, warnings=[f"הבקשה לא תקינה: {e}"], **common)
 
-    problems = cross_check(text, parsed)
+    problems = cross_check(text, parsed) + uncounted_guests(parsed, attendees)
     if previous is not None:
         problems += removed_constraints(previous.request, request, text)
     changes = describe_changes(previous.request, request) if previous is not None else []
@@ -486,6 +553,7 @@ UPDATE_PROMPT = """
 יש כבר בקשה מפוענחת (למטה), והמשתמש שולח עדכון. החזר דרך submit_request את הבקשה המלאה אחרי העדכון:
 שנה רק את מה שההודעה החדשה מבקשת, ושמור את כל השאר בדיוק כמו שהוא - אותם שמות אורחים, אותן אלרגיות,
 תזונה והעדפות. אל תוסיף ואל תסיר אורחים או הגבלות שההודעה לא מזכירה.
+attendees: אם ההודעה משנה מי מגיע ("גם השכן מגיע", "אחי לא בא") - החזר את כל הרשימה אחרי השינוי.
 """
 
 
@@ -493,7 +561,7 @@ def _as_parser_input(goal: ParsedGoal) -> dict:
     """הבקשה הקיימת, באותו מבנה שהמודל ממלא ב-submit_request."""
     request = goal.request
     target = request.get("target_budget")
-    return {"num_guests": request["num_guests"],
+    return {**({"attendees": goal.attendees} if goal.attendees else {}), "num_guests": request["num_guests"],
             "budget_total": target if target is not None else request["budget"],
             "budget_approximate": target is not None,
             "kosher": bool(request.get("kosher")),

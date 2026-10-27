@@ -180,7 +180,7 @@ def run_goal_cases(model: str | None, verbose: bool) -> int:
     passed = 0
     for case in GOAL_CASES:
         try:
-            result = parse_goal(client, model or default_model, case["text"])
+            result = parse_goal(client, model or default_model, case["text"], fallbacks=fallback_models())
         except APIError as e:  # תקלה בשרת - לא כישלון של הפענוח, אבל גם לא הצלחה
             print(f"⚠️ {case['text']}\n     - שגיאה בתקשורת עם המודל ({type(e).__name__})")
             continue
@@ -199,7 +199,8 @@ def run_goal_cases(model: str | None, verbose: bool) -> int:
     for case in UPDATE_CASES:
         previous = ParsedGoal("ok", request=case["previous"])
         try:
-            result = parse_goal(client, model or default_model, case["text"], previous=previous)
+            result = parse_goal(client, model or default_model, case["text"], previous=previous,
+                                fallbacks=fallback_models())
         except APIError as e:
             print(f"⚠️ {case['text']}\n     - שגיאה בתקשורת עם המודל ({type(e).__name__})")
             continue

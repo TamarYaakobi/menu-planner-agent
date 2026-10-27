@@ -222,6 +222,84 @@ class TestBuildRequest(unittest.TestCase):
             MenuRequest.from_dict(request)
 
 
+
+# מהצ'אט: "אני מארחת את אחותי עם 3 ילדים ואח שלי עם 2 ילדים... הבן שלי אוהב אגוזים".
+# המודל פירט 9 אנשים וכתב 10, ובפעם אחרת שכח את הבן וכתב 8. הנכון: 9
+FAMILY = [{"who": "אני", "count": 1}, {"who": "אחותי", "count": 1}, {"who": "הילדים של אחותי", "count": 3},
+          {"who": "אחי", "count": 1}, {"who": "הילדים של אחי", "count": 2}, {"who": "הבן שלי", "count": 1}]
+
+
+class TestGuestCount(unittest.TestCase):
+    """המודל רק מפרט מי מגיע - הקוד מחבר."""
+
+    def test_code_sums_attendees_and_ignores_model_total(self):
+        request, _ = build_request({"attendees": FAMILY, "num_guests": 10, "budget_total": 500})
+        self.assertEqual(request["num_guests"], 9)
+
+    def test_breakdown_replaces_model_count_in_assumptions(self):
+        from goal_parser import _evaluate
+        result = _evaluate("אני מארחת את אחותי עם 3 ילדים ואח שלי עם 2 ילדים, 500 שקל", {
+            "attendees": FAMILY, "num_guests": 10, "budget_total": 500, "guests": [],
+            "assumptions": ["מספר המשתתפים הכולל הוא 10", "הארוחה מחר"]}, 1)
+        self.assertEqual(result.request["num_guests"], 9)
+        self.assertEqual(result.assumptions[0], "ספרתי את הסועדים: אני 1 + אחותי 1 + הילדים של אחותי 3 + "
+                                                "אחי 1 + הילדים של אחי 2 + הבן שלי 1 = 9")
+        self.assertNotIn("מספר המשתתפים הכולל הוא 10", result.assumptions)
+        self.assertIn("הארוחה מחר", result.assumptions)
+        self.assertEqual(result.attendees, FAMILY)
+
+    def test_single_group_adds_no_breakdown(self):
+        from goal_parser import _evaluate
+        result = _evaluate("12 איש, 300 שקל", {"attendees": [{"who": "סועדים", "count": 12}],
+                                               "budget_total": 300, "guests": []}, 1)
+        self.assertEqual(result.request["num_guests"], 12)
+        self.assertFalse(any("ספרתי" in a for a in result.assumptions))
+
+    def test_broken_attendees_fall_back_to_num_guests(self):
+        for broken in ([{"who": "אחי", "count": 0}], [{"who": "אחי", "count": "שניים"}],
+                       [{"who": "אחי", "count": True}], [{"count": 2}], ["אחי"], "אחי ואחותי", []):
+            with self.subTest(broken=broken):
+                request, _ = build_request({"attendees": broken, "num_guests": 6, "budget_total": 100})
+                self.assertEqual(request["num_guests"], 6)
+
+    def test_float_counts_are_accepted(self):
+        request, _ = build_request({"attendees": [{"who": "אני", "count": 1.0}, {"who": "ילדים", "count": 3.0}],
+                                    "budget_total": 100})
+        self.assertEqual(request["num_guests"], 4)
+
+    def test_guest_outside_the_count_is_sent_back(self):
+        # הבאג השני מהצ'אט: "הבן שלי אוהב אגוזים" - והבן לא נספר
+        without_son = FAMILY[:-1]
+        son = dict(guest("הבן שלי", likes=["אגוזים"]), counted_in="הבן שלי")
+        nephew = dict(guest("אחיין", allergies=["dairy"]), counted_in="הילדים של אחותי")
+        first = {"attendees": without_son, "budget_total": 500, "guests": [son, nephew]}
+        fixed = dict(first, attendees=FAMILY)
+        client = FakeClient(submit(first), submit(fixed))
+        result = parse_goal(client, "fake", "אני מארחת את אחותי עם 3 ילדים ואח שלי עם 2 ילדים. "
+                                            "אחיין רגיש לחלב. הבן שלי אוהב אגוזים. 500 שקל")
+        self.assertEqual((result.status, result.attempts, result.request["num_guests"]), ("ok", 2, 9))
+        self.assertIn("הבן שלי", client.requests[1][-1]["content"])
+        self.assertNotIn("counted_in", result.request["guests"][0])  # לא דולף לבקשה
+
+    def test_update_continues_from_breakdown(self):
+        from goal_parser import ParsedGoal
+        previous = ParsedGoal("ok", request={"num_guests": 9, "budget": 500, "guests": []}, attendees=FAMILY)
+        neighbor = FAMILY + [{"who": "השכן", "count": 1}]
+        client = FakeClient(submit({"attendees": neighbor, "num_guests": 9, "budget_total": 500, "guests": []}))
+        result = parse_goal(client, "fake", "גם השכן מגיע", previous=previous)
+        self.assertIn("הילדים של אחותי", client.requests[0][1]["content"])  # המודל קיבל את הפירוט
+        self.assertEqual(result.request["num_guests"], 10)
+        self.assertIn("סועדים: מ-9 ל-10", result.changes)
+
+    def test_update_without_previous_breakdown_trusts_total(self):
+        # שיחה ישנה בלי פירוט: "שרון 1" בלבד לא אמור להפוך 4 סועדים לאחד
+        from goal_parser import ParsedGoal
+        previous = ParsedGoal("ok", request={"num_guests": 4, "budget": 300, "guests": []})
+        client = FakeClient(submit({"attendees": [{"who": "שרון", "count": 1}], "num_guests": 5,
+                                    "budget_total": 300, "guests": []}))
+        result = parse_goal(client, "fake", "גם שרון מגיעה", previous=previous)
+        self.assertEqual(result.request["num_guests"], 5)
+
 def submit(data, call_id="c1"):
     return reply(call("submit_request", data, call_id))
 

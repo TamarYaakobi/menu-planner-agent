@@ -92,6 +92,12 @@ GOAL_CASES = [
      "expect": {"status": "ok", "num_guests": 6, "budget": 440, "target": 400, "profiles": []}},
     {"text": "כ-10 אנשים, עד 300 שקל",
      "expect": {"status": "ok", "num_guests": 10, "budget": 300, "target": None, "profiles": []}},
+    # מהצ'אט: המודל ספר פעם 10 ופעם 8. אני + אחותי + 3 + אחי + 2 + הבן שלי = 9
+    {"text": "אני מארחת מחר את אחותי עם 3 ילדים ואח שלי עם 2 ילדים. אחיין שלי רגיש לחלב, סויה ובוטנים, "
+             "עוד אחיין לא סובל סלמון. אני ממש אוהבת חצילים. הבן שלי אוהב אגוזים. "
+             "הסך של התשלום שאני מוכנה זה בערך 500",
+     "expect": {"status": "ok", "num_guests": 9, "budget": 550, "target": 500,
+                "profiles": [(("dairy", "peanuts", "soy"), None)]}},
 ]
 
 
