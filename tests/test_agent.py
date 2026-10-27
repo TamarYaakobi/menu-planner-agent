@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx2  # ספריית ה-HTTP שגרסת openai הנוכחית משתמשת בה
-from openai import RateLimitError
+from openai import APITimeoutError, BadRequestError, InternalServerError, RateLimitError
 from openai.types.chat import ChatCompletionMessage
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -48,22 +48,33 @@ class FakeClient:
     def __init__(self, *replies):
         self.replies = list(replies)
         self.requests = []  # מה נשלח למודל בכל קריאה
+        self.models = []    # לאיזה מודל נשלחה כל קריאה
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **kwargs):
         self.requests.append([dict(m) for m in kwargs["messages"]])
+        self.models.append(kwargs["model"])
         item = self.replies.pop(0)
         if isinstance(item, Exception):
             raise item
         return SimpleNamespace(choices=[SimpleNamespace(message=item)])
 
 
-def make_agent(*replies, budget=1000, guests=None, max_steps=15):
+def timeout_error():
+    return APITimeoutError(request=httpx2.Request("POST", "https://example.com"))
+
+
+def server_error(status, error_class):
+    response = httpx2.Response(status, request=httpx2.Request("POST", "https://example.com"))
+    return error_class("error", response=response, body=None)
+
+
+def make_agent(*replies, budget=1000, guests=None, max_steps=15, fallbacks=None):
     tools = MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": budget, "guests": guests or []}))
     client = FakeClient(*replies)
     events = []
     agent = MenuAgent(client, "fake-model", tools, max_steps=max_steps,
-                      on_event=lambda kind, data: events.append((kind, data)))
+                      on_event=lambda kind, data: events.append((kind, data)), fallbacks=fallbacks)
     return agent, client, events
 
 
@@ -217,6 +228,52 @@ class TestRateLimit(unittest.TestCase):
                                       reply(call("finalize_menu", {"menu": VALID_MENU})))
         self.assertTrue(agent.run())
         self.assertIn("rate_limit", [kind for kind, _ in events])
+
+
+class TestFallbackModels(unittest.TestCase):
+    """כשהמודל הראשי לא זמין - עוברים לגיבוי, ונשארים עליו."""
+
+    def test_timeout_switches_to_fallback_and_stays_there(self):
+        agent, client, events = make_agent(
+            timeout_error(),                                          # הראשי לא עונה
+            reply(call("search_recipes", {"category": "main"})),      # הגיבוי עונה
+            reply(call("finalize_menu", {"menu": VALID_MENU})),
+            fallbacks=["backup-1", "backup-2"])
+        self.assertTrue(agent.run())
+        self.assertEqual(client.models, ["fake-model", "backup-1", "backup-1"])
+        self.assertIn(("fallback", {"old": "fake-model", "new": "backup-1", "reason": "APITimeoutError"}), events)
+
+    def test_overload_and_daily_quota_also_switch(self):
+        for error in (server_error(503, InternalServerError), rate_limit_error("retry in 20h1m2s")):
+            with self.subTest(type(error).__name__):
+                agent, client, _ = make_agent(error, reply(call("finalize_menu", {"menu": VALID_MENU})),
+                                              fallbacks=["backup"])
+                self.assertTrue(agent.run())
+                self.assertEqual(client.models[-1], "backup")
+
+    def test_all_models_down_raises(self):
+        agent, _, _ = make_agent(timeout_error(), timeout_error(), fallbacks=["backup"])
+        with self.assertRaises(APITimeoutError):
+            agent.run()
+
+    def test_bad_request_does_not_switch(self):
+        # שגיאה בבקשה עצמה תחזור גם במודל אחר - אין טעם לעבור
+        agent, client, _ = make_agent(server_error(400, BadRequestError), fallbacks=["backup"])
+        with self.assertRaises(BadRequestError):
+            agent.run()
+        self.assertEqual(client.models, ["fake-model"])
+
+    def test_no_fallbacks_configured(self):
+        agent, _, _ = make_agent(timeout_error())
+        with self.assertRaises(APITimeoutError):
+            agent.run()
+
+    def test_goal_parser_reports_the_model_that_answered(self):
+        from goal_parser import parse_goal
+        answer = reply(call("submit_request", {"num_guests": 4, "budget_total": 300, "guests": []}))
+        client = FakeClient(server_error(503, InternalServerError), answer)
+        result = parse_goal(client, "main", "4 איש, 300 שקל", fallbacks=["backup"])
+        self.assertEqual((result.status, result.model), ("ok", "backup"))
 
 
 class TestJudge(unittest.TestCase):

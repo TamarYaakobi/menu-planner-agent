@@ -10,7 +10,7 @@ import time
 from typing import Callable
 
 from dotenv import load_dotenv
-from openai import OpenAI, RateLimitError
+from openai import APIConnectionError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 
 DEFAULT_MODEL = "gpt-4o-mini"
 RATE_LIMIT_MAX_WAIT = 60  # שניות. המתנה ארוכה יותר = מכסה יומית, ואין טעם לחכות
@@ -32,17 +32,46 @@ def create_client() -> tuple[OpenAI, str]:
         api_key=api_key,
         base_url=os.getenv("LLM_BASE_URL") or None,  # None = השרת הרגיל של OpenAI
         timeout=30,
-        max_retries=3,  # הספרייה מנסה שוב לבד על שגיאות רשת ועומס (429, 503)
+        # הספרייה מנסה שוב לבד על שגיאות רשת ועומס. מעט ניסיונות - כי יש מודלי גיבוי,
+        # ועדיף לעבור אליהם מהר מאשר לחכות דקות למודל עמוס
+        max_retries=1,
     )
     return client, os.getenv("LLM_MODEL") or DEFAULT_MODEL
 
 
+def fallback_models() -> list[str]:
+    """מודלי גיבוי מ-LLM_FALLBACK_MODELS (מופרדים בפסיק), לפי סדר העדיפות."""
+    load_dotenv()
+    return [m.strip() for m in (os.getenv("LLM_FALLBACK_MODELS") or "").split(",") if m.strip()]
+
+
 def ask_model(client, model: str, messages: list, tools: list,
-              on_wait: Callable[[float], None] | None = None):
+              on_wait: Callable[[float], None] | None = None,
+              fallbacks: list[str] | None = None,
+              on_fallback: Callable[[str, str, Exception], None] | None = None):
     """
     שולח שיחה למודל ומחזיר את ההודעה שלו.
-    בחריגה ממכסה לדקה - מחכה וממשיך. במכסה יומית - זורק RateLimitError הלאה.
+    אם המודל לא זמין (עומס, השרת לא עונה, מכסה יומית) - עובר למודל הגיבוי הבא ברשימה.
+    רק כשכל המודלים נכשלו, השגיאה נזרקת הלאה.
     """
+    models = [model] + [m for m in fallbacks or [] if m != model]
+    for i, current in enumerate(models):
+        try:
+            return _ask_one_model(client, current, messages, tools, on_wait)
+        except UNAVAILABLE as e:
+            if i == len(models) - 1:
+                raise
+            if on_fallback:
+                on_fallback(current, models[i + 1], e)
+
+
+# המודל לא זמין כרגע - אין טעם להמשיך לנסות אותו, כדאי לעבור לגיבוי.
+# (שגיאות אחרות, כמו מפתח לא תקין או בקשה שגויה, יחזרו גם במודל אחר - ולכן לא מחליפים עליהן)
+UNAVAILABLE = (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError)
+
+
+def _ask_one_model(client, model: str, messages: list, tools: list, on_wait):
+    """בחריגה ממכסה לדקה - מחכה וממשיך. במכסה יומית - זורק RateLimitError הלאה."""
     for attempt in range(RATE_LIMIT_RETRIES + 1):
         try:
             response = client.chat.completions.create(model=model, messages=messages, tools=tools)

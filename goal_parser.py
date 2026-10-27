@@ -169,6 +169,7 @@ class ParsedGoal:
     warnings: list[str] = field(default_factory=list)     # בעיות שנשארו אחרי כל הניסיונות
     error: str | None = None
     attempts: int = 0
+    model: str | None = None                             # המודל שבפועל ענה
 
 
 def build_request(parsed: dict) -> tuple[dict | None, list[str]]:
@@ -207,17 +208,33 @@ def build_request(parsed: dict) -> tuple[dict | None, list[str]]:
     return {"num_guests": num_guests, "budget": budget, "guests": guests}, []
 
 
-def parse_goal(client, model: str, text: str, on_wait=None) -> ParsedGoal:
+def parse_goal(client, model: str, text: str, on_wait=None,
+               fallbacks: list[str] | None = None, on_fallback=None) -> ParsedGoal:
+    """result.model הוא המודל שבפועל ענה - אם היה מעבר לגיבוי, כדאי להמשיך איתו."""
     text = (text or "").strip()
     if not text:
         return ParsedGoal("error", error="הבקשה ריקה")
     if len(text) > MAX_TEXT_LENGTH:
         return ParsedGoal("error", error=f"הבקשה ארוכה מדי (מקסימום {MAX_TEXT_LENGTH} תווים)")
 
+    current = {"model": model}
+
+    def switch(old, new, error):
+        current["model"] = new  # נשארים על הגיבוי בניסיונות הבאים
+        if on_fallback:
+            on_fallback(old, new, error)
+
+    result = _parse_loop(client, current, text, on_wait, fallbacks, switch)
+    result.model = current["model"]
+    return result
+
+
+def _parse_loop(client, current: dict, text: str, on_wait, fallbacks, switch) -> ParsedGoal:
     messages = [{"role": "system", "content": PARSER_PROMPT}, {"role": "user", "content": text}]
     problems: list[str] = []
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        message = ask_model(client, model, messages, [SUBMIT_TOOL], on_wait=on_wait)
+        message = ask_model(client, current["model"], messages, [SUBMIT_TOOL], on_wait=on_wait,
+                            fallbacks=fallbacks, on_fallback=switch)
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
             messages.append({"role": "user", "content": "השתמש בכלי submit_request."})

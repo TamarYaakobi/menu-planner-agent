@@ -191,7 +191,7 @@ class TestUnderstandGoalConversation(unittest.TestCase):
         answers = list(answers)
         with mock.patch("builtins.input", side_effect=lambda prompt="": answers.pop(0)) as fake_input, \
                 mock.patch("builtins.print"):
-            result = understand_goal(client, "fake", "אני רוצה לארח", interactive, auto_yes)
+            result, _ = understand_goal(client, "fake", "אני רוצה לארח", interactive, auto_yes)
         return result, client, fake_input
 
     def test_asks_for_missing_info_then_confirms(self):

@@ -79,7 +79,7 @@ def judge(agent_success: bool, agent_cost: float | None, truth: dict) -> tuple[s
 
 
 def run_scenario(request_data: dict, model: str | None = None, max_steps: int = MAX_STEPS,
-                 on_event=None) -> dict:
+                 on_event=None, fallbacks: list[str] | None = None) -> dict:
     """מריץ את האג'נט על בקשה אחת ומחזיר סיכום כולל פסק דין. on_event מקבל כל צעד בזמן אמת."""
     events: list[tuple[str, dict]] = []
 
@@ -104,7 +104,8 @@ def run_scenario(request_data: dict, model: str | None = None, max_steps: int = 
         result.update(status="error", error=str(e))
         return result
 
-    agent = MenuAgent(client, model or default_model, tools, max_steps=max_steps, on_event=record)
+    agent = MenuAgent(client, model or default_model, tools, max_steps=max_steps, on_event=record,
+                      fallbacks=fallbacks)
     start = time.time()
     try:
         success = agent.run()

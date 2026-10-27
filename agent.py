@@ -22,7 +22,7 @@ from typing import Callable
 from openai import APIError, RateLimitError
 
 from goal_parser import parse_goal, unknown_dislikes
-from llm import ConfigError, ask_model, create_client
+from llm import ConfigError, ask_model, create_client, fallback_models
 from tools import ALLERGENS, CATEGORIES, DIETS, DataError, MenuRequest, MenuTools, load_json
 
 MAX_STEPS = 15         # מגבלת קריאות למודל - מונעת לולאה אינסופית ועלות לא צפויה
@@ -145,8 +145,9 @@ class MenuAgent:
     """
 
     def __init__(self, client, model: str, tools: MenuTools, max_steps: int = MAX_STEPS,
-                 on_event: Callable[[str, dict], None] | None = None):
+                 on_event: Callable[[str, dict], None] | None = None, fallbacks: list[str] | None = None):
         self.client = client
+        self.fallbacks = fallbacks or []
         self.model = model
         self.tools = tools
         self.max_steps = max_steps
@@ -212,7 +213,13 @@ class MenuAgent:
 
     def _ask_model(self, messages: list):
         return ask_model(self.client, self.model, messages, TOOL_SCHEMAS,
-                         on_wait=lambda seconds: self._emit("rate_limit", seconds=seconds))
+                         on_wait=lambda seconds: self._emit("rate_limit", seconds=seconds),
+                         fallbacks=self.fallbacks, on_fallback=self._switch_model)
+
+    def _switch_model(self, old: str, new: str, error: Exception):
+        # נשארים על מודל הגיבוי עד סוף הריצה - אחרת כל צעד היה מחכה שוב למודל התקוע
+        self.model = new
+        self._emit("fallback", old=old, new=new, reason=type(error).__name__)
 
     def _execute(self, name: str, raw_args: str) -> dict:
         """מריץ כלי אחד. כל בעיה חוזרת למודל כ-error, כדי שיוכל לתקן."""
@@ -330,6 +337,8 @@ def print_event(kind: str, data: dict):
         print(f"↩ נשארו {data['remaining']} צעדים - מזהירים את המודל")
     elif kind == "rate_limit":
         print(f"⏳ חריגה ממכסת הבקשות לדקה - ממתין {data['seconds']:.0f} שניות")
+    elif kind == "fallback":
+        print(f"🔁 המודל {data['old']} לא זמין ({data['reason']}) - עובר ל-{data['new']}")
 
 
 def print_success(approved: dict):
@@ -356,46 +365,67 @@ def print_failure(reason: str, best_cost: dict | None):
         print(f"  עלות: {best_cost['total_cost']:.2f} ש\"ח (תקציב: {best_cost['budget']:g})")
 
 
-def understand_goal(client, model: str, text: str, interactive: bool, auto_yes: bool) -> dict | None:
+def print_model_error(error: APIError):
+    """הודעה קצרה וברורה, במקום JSON ארוך מהשרת."""
+    if isinstance(error, RateLimitError):
+        print("\n❌ נגמרה מכסת הבקשות למודל.")
+    else:
+        print(f"\n❌ המודל לא זמין כרגע ({type(error).__name__}) - כנראה עומס בשרת.")
+    print("אפשר לנסות שוב בעוד כמה דקות, או להגדיר מודלי גיבוי ב-LLM_FALLBACK_MODELS שבקובץ .env.")
+
+
+def understand_goal(client, model: str, text: str, interactive: bool, auto_yes: bool,
+                    fallbacks: list[str] | None = None) -> tuple[dict | None, str]:
     """
     מטרה בשפה חופשית -> בקשה מובנית. שואל את המשתמש כשחסר מידע, ומבקש אישור להבנה.
-    מחזיר None אם המשתמש ביטל או שאי אפשר להמשיך.
+    מחזיר (בקשה, המודל שעבד). בקשה None = המשתמש ביטל או שאי אפשר להמשיך.
     """
     for _ in range(MAX_QUESTION_ROUNDS):
         print("🧠 מפענח את הבקשה...")
         goal = parse_goal(client, model, text,
-                          on_wait=lambda s: print_event("rate_limit", {"seconds": s}))
-        if goal.status == "needs_info":
-            if not interactive:
-                print("חסר מידע: " + " ".join(goal.questions))
-                return None
+                          on_wait=lambda s: print_event("rate_limit", {"seconds": s}), fallbacks=fallbacks,
+                          on_fallback=lambda old, new, e: print_event(
+                              "fallback", {"old": old, "new": new, "reason": type(e).__name__}))
+        model = goal.model or model
+        result = _confirm_goal(goal, interactive, auto_yes)
+        if result == "ask":
             text += "\n" + "\n".join(f"{q} {input(q + ' ')}" for q in goal.questions)
             continue
-        if goal.status != "ok":
-            print(f"שגיאה: {goal.error}")
-            return None
-
-        print("\n🎯 כך הבנתי את הבקשה:\n" + describe_request(MenuRequest.from_dict(goal.request)))
-        for title, items in (("הנחות שעשיתי", goal.assumptions),
-                             ("⚠️ הגבלות שהמערכת לא יודעת לבדוק - התפריט לא מתחשב בהן", goal.unsupported),
-                             ("⚠️ ייתכן שלא הבנתי נכון", goal.warnings),
-                             ("לא מופיע באף מנה במאגר", unknown_dislikes(goal.request))):
-            if items:
-                print(f"\n{title}:\n" + "\n".join(f"  - {item}" for item in items))
-
-        # הגבלה שלא נבדקת או חשד לטעות בפענוח - תמיד דורשים אישור של אדם, גם עם --yes
-        needs_attention = bool(goal.unsupported or goal.warnings)
-        if auto_yes and not needs_attention:
-            return goal.request
-        if not interactive:
-            print("\nיש כאן משהו שדורש אישור. הריצי שוב בטרמינל, בלי --yes, כדי לאשר.")
-            return None
-        if input("\nלהמשיך עם ההבנה הזו? (כן/לא) ").strip().lower() in ("כ", "כן", "y", "yes"):
-            return goal.request
-        print("בוטל. אפשר לנסח את הבקשה מחדש.")
-        return None
+        return result, model
 
     print("לא הצלחתי לקבל את כל המידע שצריך.")
+    return None, model
+
+
+def _confirm_goal(goal, interactive: bool, auto_yes: bool) -> dict | str | None:
+    """מציג את ההבנה ומחליט: הבקשה (מאושרת), "ask" (לשאול על מידע חסר), או None (לעצור)."""
+    if goal.status == "needs_info":
+        if interactive:
+            return "ask"
+        print("חסר מידע: " + " ".join(goal.questions))
+        return None
+    if goal.status != "ok":
+        print(f"שגיאה: {goal.error}")
+        return None
+
+    print("\n🎯 כך הבנתי את הבקשה:\n" + describe_request(MenuRequest.from_dict(goal.request)))
+    for title, items in (("הנחות שעשיתי", goal.assumptions),
+                         ("⚠️ הגבלות שהמערכת לא יודעת לבדוק - התפריט לא מתחשב בהן", goal.unsupported),
+                         ("⚠️ ייתכן שלא הבנתי נכון", goal.warnings),
+                         ("לא מופיע באף מנה במאגר", unknown_dislikes(goal.request))):
+        if items:
+            print(f"\n{title}:\n" + "\n".join(f"  - {item}" for item in items))
+
+    # הגבלה שלא נבדקת או חשד לטעות בפענוח - תמיד דורשים אישור של אדם, גם עם --yes
+    needs_attention = bool(goal.unsupported or goal.warnings)
+    if auto_yes and not needs_attention:
+        return goal.request
+    if not interactive:
+        print("\nיש כאן משהו שדורש אישור. הריצי שוב בטרמינל, בלי --yes, כדי לאשר.")
+        return None
+    if input("\nלהמשיך עם ההבנה הזו? (כן/לא) ").strip().lower() in ("כ", "כן", "y", "yes"):
+        return goal.request
+    print("בוטל. אפשר לנסח את הבקשה מחדש.")
     return None
 
 
@@ -413,9 +443,11 @@ def main() -> int:
 
     try:
         client, model = create_client()
+        fallbacks = fallback_models()
         if args.goal or args.ask:
             text = args.goal or input("מה התוכנית? (מי מגיע, תקציב, אלרגיות...) ")
-            request_data = understand_goal(client, model, text, sys.stdin.isatty(), args.yes)
+            # ממשיכים עם המודל שעבד בפענוח - אם היה מעבר לגיבוי, אין טעם לחכות שוב למודל התקוע
+            request_data, model = understand_goal(client, model, text, sys.stdin.isatty(), args.yes, fallbacks)
             if request_data is None:
                 return 2
         else:
@@ -426,12 +458,8 @@ def main() -> int:
     except (DataError, ValueError, ConfigError) as e:
         print(f"שגיאה: {e}")
         return 2
-    except RateLimitError:
-        print("\n❌ נגמרה מכסת הבקשות למודל. אפשר לנסות שוב מאוחר יותר, "
-              "או להחליף מודל ב-LLM_MODEL שבקובץ .env")
-        return 1
     except APIError as e:
-        print(f"\n❌ שגיאה בתקשורת עם המודל ({type(e).__name__}): {e}")
+        print_model_error(e)
         return 1
     except (EOFError, KeyboardInterrupt):
         print("\nבוטל.")
@@ -439,15 +467,11 @@ def main() -> int:
 
     if not (args.goal or args.ask):  # במטרה חופשית ההבנה כבר הוצגה
         print("🎯 המטרה:\n" + describe_request(request))
-    agent = MenuAgent(client, model, tools)
+    agent = MenuAgent(client, model, tools, fallbacks=fallbacks)
     try:
         success = agent.run()
-    except RateLimitError:
-        print("\n❌ נגמרה מכסת הבקשות למודל. אפשר לנסות שוב מאוחר יותר, "
-              "או להחליף מודל ב-LLM_MODEL שבקובץ .env")
-        return 1
-    except APIError as e:  # אחרי שהספרייה כבר ניסתה שוב כמה פעמים
-        print(f"\n❌ שגיאה בתקשורת עם המודל ({type(e).__name__}): {e}")
+    except APIError as e:  # אחרי ניסיונות חוזרים ומעבר לכל מודלי הגיבוי
+        print_model_error(e)
         return 1
 
     if success:

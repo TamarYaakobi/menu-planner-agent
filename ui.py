@@ -19,7 +19,7 @@ from openai import APIError
 from agent import MAX_STEPS, SYSTEM_PROMPT, describe_request, short_args, summarize
 from evaluate import VERDICT_ICON, find_best_menu, run_scenario
 from goal_parser import parse_goal, unknown_dislikes
-from llm import DEFAULT_MODEL, ConfigError, create_client
+from llm import DEFAULT_MODEL, ConfigError, create_client, fallback_models
 from scenarios import SCENARIOS
 from tools import ALLERGENS, CATEGORIES, DIETS, MenuRequest, MenuTools
 
@@ -113,12 +113,14 @@ def render_event(box, kind: str, data: dict):
         box.warning(f"↩ נשארו {data['remaining']} צעדים - מזהירים את המודל")
     elif kind == "rate_limit":
         box.warning(f"⏳ חריגה ממכסת הבקשות לדקה - ממתין {data['seconds']:.0f} שניות")
+    elif kind == "fallback":
+        box.warning(f"🔁 המודל {data['old']} לא זמין ({data['reason']}) - עובר ל-{data['new']}")
 
 
 def run_agent(request_data: dict, model: str, max_steps: int, log) -> dict:
     """מריץ את האג'נט ומציג כל צעד ב-log בזמן אמת."""
     return run_scenario(request_data, model, max_steps,
-                        on_event=lambda kind, data: render_event(log, kind, data))
+                        on_event=lambda kind, data: render_event(log, kind, data), fallbacks=fallback_models())
 
 
 def format_duration(seconds: float) -> str:
@@ -186,7 +188,7 @@ def goal_input(model: str) -> tuple[dict | None, str, bool]:
         try:
             client, default_model = create_client()
             with st.spinner("מפענח..."):
-                result = parse_goal(client, model or default_model, text)
+                result = parse_goal(client, model or default_model, text, fallbacks=fallback_models())
         except ConfigError as e:
             st.error(str(e))
             return None, "", False
