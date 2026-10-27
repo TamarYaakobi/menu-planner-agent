@@ -35,6 +35,7 @@ SAFE = {
     "עדשים כתומות", "עדשים ירוקות", "סוכר", "שוקולד מריר", "חלב קוקוס", "רסק עגבניות", "זיתים",
     "שמן זית", "שמן קנולה", "פפריקה", "אבקת קארי", "כמהין",
 }
+LIKE_POOL = ["חסה", "שקשוקה", "סלמון", "עוף", "שוקולד", "אבטיח", "פסטה", "עדשים", "פטריות"]
 DISLIKE_POOL = ["עגבניות", "פטריות", "עדשים", "שום", "בצל", "תפוחי אדמה", "אורז", "עוף", "בקר", "סלמון",
                 "ביצים", "שוקולד", "אבטיח", "מלפפונים", "פלפל", "קישואים", "תפוזים", "חלב", "שקדים", "כוסברה"]
 
@@ -92,9 +93,11 @@ def oracle_valid_total(request: dict, menu: dict) -> float | None:
 # ---------- מחוללים אקראיים ----------
 
 def random_guest(rng: random.Random, i: int) -> dict:
+    # likes נוצרים כאן, אבל האורקל מתעלם מהם - כך הבדיקה מוכיחה שהעדפה רכה לא משנה אף החלטה
     guest = {"name": f"אורח{i}",
              "allergies": rng.sample(list(ALLERGENS), rng.choice([0, 0, 1, 1, 2, 3])),
-             "dislikes": rng.sample(DISLIKE_POOL, rng.choice([0, 1, 2, 3]))}
+             "dislikes": rng.sample(DISLIKE_POOL, rng.choice([0, 1, 2, 3])),
+             "likes": rng.sample(LIKE_POOL, rng.choice([0, 0, 1, 2]))}
     if rng.random() < 0.3:
         guest["diet"] = rng.choice(list(DIETS))
     return guest
@@ -197,6 +200,13 @@ class TestToolsAgreeWithOracle(unittest.TestCase):
                 approved = tools.finalize_menu(menu)["approved"]
                 self.assertEqual(approved, should_approve)
                 approved_count += approved
+
+                # דיווח ה"אוהב/ת" - מול מימוש פשוט: השם מופיע בשם מנה או במרכיב
+                dishes = menu["mains"] + [menu["side"], menu["vegetable"], menu["dessert"]]
+                expected_likes = [any(like in n for d in dishes for n in [d] + [i["name"] for i in BY_NAME[d]["ingredients"]])
+                                  for g in request["guests"] for like in g["likes"]]
+                reported = [x["in_menu"] for x in tools.check_guests(menu).get("likes", [])]
+                self.assertEqual(reported, expected_likes)
         self.assertGreater(approved_count, 100, "המחולל צריך לייצר מספיק תפריטים תקינים כדי שהבדיקה תהיה משמעותית")
 
     def test_suggest_swaps(self):

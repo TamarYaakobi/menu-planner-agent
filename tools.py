@@ -63,6 +63,12 @@ class Guest:
     allergies: list[str] = field(default_factory=list)  # אילוץ חובה
     diet: str | None = None                             # אילוץ חובה
     dislikes: list[str] = field(default_factory=list)   # העדפה בלבד
+    likes: list[str] = field(default_factory=list)      # העדפה רכה: כדאי לכלול, לא חובה
+
+    def liked_in(self, recipe: dict) -> list[str]:
+        """מה מהדברים שהאורח אוהב יש במנה - לפי שם המנה ("שקשוקה") או מרכיב ("חסה")."""
+        names = [recipe["name"]] + [ing["name"] for ing in recipe["ingredients"]]
+        return [like for like in self.likes if any(like in n for n in names)]
 
     def hard_conflicts(self, recipe: dict) -> list[str]:
         """הסיבות שבגללן האורח *לא יכול* לאכול את המנה (רשימה ריקה = יכול)."""
@@ -115,7 +121,8 @@ class MenuRequest:
                 raise ValueError(f"תזונה לא מוכרת אצל {name}: '{diet}'. אפשרויות: {list(DIETS)}")
             # העדפה ריקה הייתה "מתאימה" לכל מרכיב ("" in "עגבניות" == True), אז מסננים אותה
             dislikes = [d.strip() for d in _string_list(g, "dislikes", name) if d.strip()]
-            guests.append(Guest(name.strip(), allergies, diet, dislikes))
+            likes = [x.strip() for x in _string_list(g, "likes", name) if x.strip()]
+            guests.append(Guest(name.strip(), allergies, diet, dislikes, likes))
 
         if len(guests) > num_guests:
             raise ValueError(f"ברשימה יש {len(guests)} אורחים, יותר ממספר האורחים ({num_guests})")
@@ -153,8 +160,12 @@ class MenuTools:
     # --- כלי 1 ---
     def search_recipes(self, category: str, exclude_allergens: list[str] | None = None,
                        diet: str | None = None,
-                       exclude_ingredients: list[str] | None = None) -> dict:
-        """מחפש מנות בקטגוריה, עם סינון לפי אלרגנים, תזונה ומרכיבים."""
+                       exclude_ingredients: list[str] | None = None,
+                       include_any: list[str] | None = None) -> dict:
+        """
+        מחפש מנות בקטגוריה, עם סינון לפי אלרגנים, תזונה ומרכיבים.
+        include_any: רק מנות שיש בהן לפחות אחד מאלה (בשם המנה או במרכיב) - למשל מה שאורח אוהב.
+        """
         if category not in CATEGORIES:
             return {"error": f"קטגוריה לא מוכרת: '{category}'. אפשרויות: {list(CATEGORIES)}"}
         exclude_allergens = exclude_allergens or []
@@ -175,6 +186,8 @@ class MenuTools:
                 continue
             names = [ing["name"] for ing in r["ingredients"]]
             if any(x in n for x in exclude_ingredients for n in names):
+                continue
+            if include_any and not any(x in n for x in include_any for n in names + [r["name"]]):
                 continue
             results.append({"name": r["name"], "allergens": r["allergens"],
                             "diet": r["diet"], "ingredients": names})
@@ -254,8 +267,21 @@ class MenuTools:
                 add(g, "soft", f"יותר מדי מנות עם מרכיבים לא אהובים: {disliked} "
                                f"(מותר עד {MAX_DISLIKED_NON_MAIN})")
 
-        return {"all_satisfied": not violations, "violations": violations,
-                "guests_checked": len(self.request.guests)}
+        result = {"all_satisfied": not violations, "violations": violations,
+                  "guests_checked": len(self.request.guests)}
+        likes = self.likes_report(dishes)
+        if likes:  # מידע בלבד - לא משפיע על all_satisfied
+            result["likes"] = likes
+        return result
+
+    def likes_report(self, dishes: list[dict]) -> list[dict]:
+        """לכל דבר שאורח אוהב: האם הוא בתפריט, ובאיזו מנה. העדפה רכה - לא הפרה."""
+        report = []
+        for g in self.request.guests:
+            for like in g.likes:
+                found = [r["name"] for r in dishes if like in g.liked_in(r)]
+                report.append({"guest": g.name, "likes": like, "in_menu": bool(found), "dishes": found})
+        return report
 
     # --- כלי 4 ---
     def finalize_menu(self, menu: dict) -> dict:
@@ -284,6 +310,7 @@ class MenuTools:
             "total_cost": cost["total_cost"],
             "cost_per_guest": cost["cost_per_guest"],
             "shopping_list": self._shopping_list(dishes),
+            "likes": self.likes_report(dishes),
         }
         return {"approved": True, **self.approved_menu}
 

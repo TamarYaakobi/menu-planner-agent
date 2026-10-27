@@ -17,8 +17,9 @@ from test_agent import FakeClient, call, reply  # noqa: E402
 from tools import MenuRequest  # noqa: E402
 
 
-def guest(name="אורח", allergies=(), diet=None, dislikes=()):
-    return {"name": name, "allergies": list(allergies), "diet": diet, "dislikes": list(dislikes)}
+def guest(name="אורח", allergies=(), diet=None, dislikes=(), likes=()):
+    return {"name": name, "allergies": list(allergies), "diet": diet, "dislikes": list(dislikes),
+            "likes": list(likes)}
 
 
 def parsed(guests=(), num_guests=10, budget_total=200, **extra):
@@ -85,6 +86,31 @@ class TestCrossCheck(unittest.TestCase):
     def test_explicit_per_guest_amount_must_not_be_total(self):
         self.assertProblem("8 אנשים, 40 ש\"ח לאדם", parsed(budget_total=40))
         self.assertProblem("ארוחה ל-6, לכל אחד יש העדפות", parsed(), False)
+
+    AUNT = "סבתא שלי לא אוהבת חריף, ודודה שלי שאוהבת חסה"
+
+    def test_like_inverted_into_dislike_is_caught(self):
+        # באג אמיתי: "שאוהבת חסה" פוענח כ"לא אוהבת חסה"
+        self.assertProblem(self.AUNT, parsed([guest("דודה", dislikes=["חסה"])]))
+        self.assertProblem(self.AUNT, parsed([guest("דודה", likes=["חסה"])]), False)
+
+    def test_same_food_liked_by_one_disliked_by_another(self):
+        text = "נועה אוהבת שקשוקה ורון לא אוהב שקשוקה"
+        self.assertProblem(text, parsed([guest("נועה", likes=["שקשוקה"]), guest("רון", dislikes=["שקשוקה"])]), False)
+
+    def test_dropped_like_is_caught(self):
+        self.assertProblem(self.AUNT, parsed([guest("דודה")]))
+
+    def test_like_detection_edge_cases(self):
+        from goal_parser import liked_words
+        self.assertEqual(liked_words("דני אוהב מאוד את השקשוקה"), ["שקשוקה"])
+        self.assertEqual(liked_words("רון לא אוהב עוף"), [])          # שלילה
+        self.assertEqual(liked_words("סבתא שלא אוהבת עוף"), [])       # שלילה עם "שלא"
+        self.assertEqual(liked_words("מיכל אוהבת לבשל"), [])          # לא מאכל
+        self.assertEqual(liked_words("סבא אוהב חריף"), [])            # לא במאגר - אין מה לעשות איתו
+
+    def test_like_mention_is_not_an_allergy(self):
+        self.assertProblem("דנה אוהבת ביצים", parsed([guest(likes=["ביצים"])]), False)
 
 
 class TestBuildRequest(unittest.TestCase):

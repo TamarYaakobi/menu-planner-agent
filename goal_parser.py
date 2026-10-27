@@ -32,6 +32,10 @@ def _known_ingredients() -> list[str]:
     return sorted({ing["name"] for r in recipes for ing in r["ingredients"]})
 
 
+def _known_dishes() -> list[str]:
+    return [r["name"] for r in load_json(DATA_DIR / "recipes.json")]
+
+
 PARSER_PROMPT = f"""אתה מפענח בקשות לתכנון ארוחה. קרא את הבקשה והעבר אותה לכלי submit_request.
 
 - num_guests: מספר הסועדים הכולל. "אני ובעלי ו-3 ילדים" = 5. אם המספר לא נאמר במפורש אבל אפשר להסיק אותו -
@@ -48,6 +52,9 @@ PARSER_PROMPT = f"""אתה מפענח בקשות לתכנון ארוחה. קרא
 - dislikes: מרכיבים שהאדם לא אוהב או "לא סובל" - לא אלרגיה. כתוב אותם בשם מהרשימה הזו כשאפשר
   (למשל "ביצה" -> "ביצים"). מרכיב שלא ברשימה - רשום כמו שהוא, גם הוא ב-dislikes:
   {", ".join(_known_ingredients())}
+- likes: מנות או מרכיבים שהאדם אוהב ("אוהבת חסה", "מת על שקשוקה") - העדפה רכה. כתוב בשם מהרשימות כשאפשר.
+  "אוהב X" זה תמיד likes, ולעולם לא dislikes. אורח שרק אוהב משהו - גם הוא ב-guests.
+  מנות שיש במאגר: {", ".join(_known_dishes())}
 - unsupported: הגבלה רפואית, דתית או תזונתית שאינה ברשימות למעלה - בוטנים, שומשום, סויה, כשרות, סוכרת,
   פירות ים וכו'. אסור למפות אותה למשהו אחר. בוטנים הם לא nuts. "לא אוהב X" זה תמיד dislikes, לא unsupported.
 - כל הגבלה חייבת להופיע אצל אורח: מי שצמחוני מקבל diet, מי שאלרגי מקבל allergies. לא מספיק לכתוב את זה ב-assumptions.
@@ -68,6 +75,7 @@ SUBMIT_TOOL = {"type": "function", "function": {
             "allergies": {"type": "array", "items": {"type": "string", "enum": list(ALLERGENS)}},
             "diet": {"type": ["string", "null"], "enum": [*DIETS, None]},
             "dislikes": {"type": "array", "items": {"type": "string"}},
+            "likes": {"type": "array", "items": {"type": "string"}},
         }, "required": ["name"]}},
         "unsupported": {"type": "array", "items": {"type": "string"}},
         "assumptions": {"type": "array", "items": {"type": "string"}},
@@ -112,8 +120,8 @@ def cross_check(text: str, parsed: dict) -> list[str]:
     - תקציב לאדם, כשהטקסט לא אומר "לאדם" - בבדיקות המודל הפך "150₪" ל-150 לאדם, פי 6 מהתקציב.
     """
     guests = [g for g in parsed.get("guests") or [] if isinstance(g, dict)]
-    notes = " ".join((parsed.get("assumptions") or []) + (parsed.get("unsupported") or []))
     dislikes = " ".join(d for g in guests for d in (g.get("dislikes") or []))
+    likes = " ".join(x for g in guests for x in (g.get("likes") or []))
     allergies = {a for g in guests for a in (g.get("allergies") or [])}
     diets = {g.get("diet") for g in guests}
     problems = []
@@ -123,8 +131,8 @@ def cross_check(text: str, parsed: dict) -> list[str]:
             continue
         covered_by_diet = ("vegan" in diets and allergen in ("eggs", "dairy", "fish")) or \
                           ("vegetarian" in diets and allergen == "fish")
-        if covered_by_diet or mentioned(dislikes, pattern):
-            continue
+        if covered_by_diet or mentioned(dislikes, pattern) or mentioned(likes, pattern):
+            continue  # "לא אוהבת ביצים" / "אוהבת ביצים" - אזכור שאינו אלרגיה
         problems.append(f"הטקסט מזכיר {ALLERGENS[allergen]}, אבל אף אורח לא מסומן. אם מישהו אלרגי - "
                         f"הוסף לו allergies: {allergen}. אם מישהו רק לא אוהב - dislikes.")
 
@@ -139,7 +147,49 @@ def cross_check(text: str, parsed: dict) -> list[str]:
     if parsed.get("budget_per_guest") is None and re.search(MONEY_PATTERN + PER_GUEST_PATTERN, text, re.IGNORECASE):
         problems.append("הטקסט מציין סכום לאדם - זה budget_per_guest, לא budget_total.")
 
+    # "דודה שלי שאוהבת חסה" פוענח פעם כ"לא אוהבת חסה" - והאג'נט היה מוציא את מה שהיא אוהבת
+    # (מותר שאותו מאכל יהיה אצל אחד ב-likes ואצל אחר ב-dislikes: "נועה אוהבת שקשוקה ורון לא")
+    for word in liked_words(text):
+        if any(_same_food(word, x) for g in guests for x in g.get("likes") or []):
+            continue
+        if any(_same_food(word, d) for g in guests for d in g.get("dislikes") or []):
+            problems.append(f"הטקסט אומר שמישהו אוהב '{word}', אבל זה ברשימת ה'לא אוהב' (dislikes). "
+                            f"'אוהב' זה likes.")
+        else:
+            problems.append(f"הטקסט אומר שמישהו אוהב '{word}', ואף אורח לא מסומן כך. הוסף לו likes.")
     return problems
+
+
+NEGATIONS = {"לא", "ולא", "שלא", "כשלא", "אינו", "אינה"}
+FILLERS = {"את", "גם", "מאוד", "ממש", "נורא", "הכי"}
+
+
+def liked_words(text: str) -> list[str]:
+    """
+    מה שמופיע אחרי "אוהב/ת" (בלי "לא" לפניו) - רק אם זו מנה או מרכיב שקיימים במאגר,
+    כדי לא להיתפס על "אוהבת לבשל" או "אוהב חריף" (שאין להם מה לעשות בתפריט).
+    """
+    tokens = [t.strip(".,!?;:\"'()") for t in text.split()]
+    vocabulary = _known_ingredients() + _known_dishes()
+    found = []
+    for i, token in enumerate(tokens):
+        if not re.fullmatch(r"[ושכ]{0,2}אוהב\w*", token) or (i > 0 and tokens[i - 1] in NEGATIONS):
+            continue
+        j = i + 1
+        while j < len(tokens) and tokens[j] in FILLERS:
+            j += 1
+        if j == len(tokens):
+            continue
+        word = tokens[j]
+        for candidate in (word, word[1:] if word.startswith("ה") else None):  # "את החסה" -> "חסה"
+            if candidate and len(candidate) >= 2 and any(candidate in v for v in vocabulary):
+                found.append(candidate)
+                break
+    return found
+
+
+def _same_food(a: str, b: str) -> bool:
+    return a in b or b in a
 
 
 def detect_unsupported(text: str, parsed: dict) -> list[str]:
@@ -203,7 +253,8 @@ def build_request(parsed: dict) -> tuple[dict | None, list[str]]:
             budget = round(per_guest * num_guests, 2)
 
     guests = [{"name": g.get("name") or "אורח", "allergies": g.get("allergies") or [],
-               "diet": g.get("diet"), "dislikes": g.get("dislikes") or []} if isinstance(g, dict) else g
+               "diet": g.get("diet"), "dislikes": g.get("dislikes") or [],
+               "likes": g.get("likes") or []} if isinstance(g, dict) else g
               for g in parsed.get("guests") or []]
     return {"num_guests": num_guests, "budget": budget, "guests": guests}, []
 

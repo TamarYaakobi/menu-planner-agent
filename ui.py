@@ -33,7 +33,7 @@ ALLERGEN_BY_HEBREW = {v: k for k, v in ALLERGENS.items()}
 DIET_BY_HEBREW = {v: k for k, v in DIETS.items()}
 SCENARIO_BY_ID = {s["id"]: s for s in SCENARIOS}
 EXPECT_TEXT = {"success": "תפריט מאושר", "failure": "דיווח שאין פתרון", "invalid": "פסילת הקלט"}
-COLUMNS = ["שם", "אלרגיות", "תזונה", "לא אוהב/ת"]
+COLUMNS = ["שם", "אלרגיות", "תזונה", "לא אוהב/ת", "אוהב/ת"]
 
 
 # ---------- עריכת הבקשה ----------
@@ -52,6 +52,7 @@ def guests_to_table(guests: list[dict]) -> pd.DataFrame:
         "אלרגיות": ", ".join(ALLERGENS.get(a, a) for a in g.get("allergies", [])),
         "תזונה": DIETS.get(g.get("diet"), g.get("diet") or ""),
         "לא אוהב/ת": ", ".join(g.get("dislikes", [])),
+        "אוהב/ת": ", ".join(g.get("likes", [])),
     } for g in guests]
     return pd.DataFrame(rows, columns=COLUMNS)
 
@@ -61,7 +62,8 @@ def table_to_guests(table: pd.DataFrame) -> list[dict]:
     for row in table.to_dict("records"):
         name, allergies = _cell(row.get("שם")), _split(_cell(row.get("אלרגיות")))
         diet, dislikes = _cell(row.get("תזונה")), _split(_cell(row.get("לא אוהב/ת")))
-        if not (name or allergies or diet or dislikes):
+        likes = _split(_cell(row.get("אוהב/ת")))
+        if not (name or allergies or diet or dislikes or likes):
             continue  # שורה ריקה
         guests.append({
             "name": name,
@@ -69,6 +71,7 @@ def table_to_guests(table: pd.DataFrame) -> list[dict]:
             "allergies": [ALLERGEN_BY_HEBREW.get(a, a) for a in allergies],
             "diet": DIET_BY_HEBREW.get(diet, diet) or None,
             "dislikes": dislikes,
+            "likes": likes,
         })
     return guests
 
@@ -156,6 +159,9 @@ def show_result(r: dict):
             {"סוג": "תוספת", "מנה": menu["side"]}, {"סוג": "ירקות", "מנה": menu["vegetable"]},
             {"סוג": "קינוח", "מנה": menu["dessert"]},
         ]))
+        for like in r["approved"].get("likes", []):
+            where = f"✓ ב{', '.join(like['dishes'])}" if like["in_menu"] else "✗ לא נכנס לתפריט"
+            st.write(f"{'❤️' if like['in_menu'] else '🤍'} {like['guest']} אוהב/ת {like['likes']}: {where}")
         with st.expander("🛒 רשימת קניות"):
             st.dataframe(pd.DataFrame(r["approved"]["shopping_list"]), width="stretch")
     else:

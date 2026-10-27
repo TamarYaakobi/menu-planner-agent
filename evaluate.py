@@ -31,16 +31,21 @@ def find_best_menu(tools: MenuTools) -> dict:
     by_category = {c: [n for n, r in tools.recipes.items() if r["category"] == c]
                    for c in ("main", "side", "vegetable", "dessert")}
     best, valid_count, within_budget_count = None, 0, 0
+    total_likes = sum(len(g.likes) for g in tools.request.guests)
+    max_likes = 0  # הכי הרבה העדפות "אוהב/ת" שאפשר לכלול בתפריט תקין שבתקציב
 
     for mains, side, vegetable, dessert in product(combinations(by_category["main"], 2),
                                                    by_category["side"], by_category["vegetable"],
                                                    by_category["dessert"]):
         menu = {"mains": list(mains), "side": side, "vegetable": vegetable, "dessert": dessert}
         cost = tools.calculate_cost(menu)
-        if not cost["complete"] or not tools.check_guests(menu)["all_satisfied"]:
+        guests = tools.check_guests(menu)
+        if not cost["complete"] or not guests["all_satisfied"]:
             continue
         valid_count += 1
         within_budget_count += cost["within_budget"]
+        if cost["within_budget"] and total_likes:
+            max_likes = max(max_likes, sum(x["in_menu"] for x in guests.get("likes", [])))
         if best is None or cost["total_cost"] < best["total_cost"]:
             best = {"menu": menu, "total_cost": cost["total_cost"]}
 
@@ -49,7 +54,20 @@ def find_best_menu(tools: MenuTools) -> dict:
         "solvable": within_budget_count > 0,
         "valid_menus": valid_count,
         "valid_within_budget": within_budget_count,
+        "total_likes": total_likes,
+        "max_likes": max_likes,
     }
+
+
+def likes_note(agent_likes: int | None, truth: dict) -> str:
+    """'אוהב/ת' הוא העדפה רכה - לא משנה את פסק הדין, אבל מדווחים כמה נכללו ומה היה אפשר."""
+    if not truth.get("total_likes") or agent_likes is None:
+        return ""
+    possible = truth["max_likes"]
+    note = f" | אוהב/ת: {agent_likes}/{truth['total_likes']}"
+    if agent_likes < possible:
+        return note + f" (אפשר היה {possible})"
+    return note + (" (המקסימום האפשרי בתקציב)" if possible < truth["total_likes"] else "")
 
 
 def judge(agent_success: bool, agent_cost: float | None, truth: dict) -> tuple[str, str]:
@@ -125,9 +143,11 @@ def run_scenario(request_data: dict, model: str | None = None, max_steps: int = 
         agent_cost = approved["total_cost"]
     else:
         agent_cost = agent.best_cost and agent.best_cost["total_cost"]
+    status, text = judge(success, agent_cost, truth)
+    if success:
+        text += likes_note(sum(x["in_menu"] for x in approved.get("likes", [])), truth)
     result.update(status="success" if success else "failure", approved=approved,
-                  failure_reason=agent.failure_reason, best_cost=agent.best_cost,
-                  verdict=judge(success, agent_cost, truth))
+                  failure_reason=agent.failure_reason, best_cost=agent.best_cost, verdict=(status, text))
     return result
 
 

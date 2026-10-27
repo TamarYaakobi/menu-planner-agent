@@ -299,6 +299,19 @@ class TestJudge(unittest.TestCase):
         self.assertEqual(judge(False, None, solvable)[0], "fail")
         self.assertEqual(judge(True, 100, unsolvable)[0], "bug")
 
+    def test_likes_note(self):
+        from evaluate import likes_note
+        truth = {"total_likes": 2, "max_likes": 1}
+        self.assertIn("אפשר היה 1", likes_note(0, truth))
+        self.assertIn("המקסימום האפשרי", likes_note(1, truth))
+        self.assertEqual(likes_note(0, {"total_likes": 0, "max_likes": 0}), "")
+
+    def test_solver_counts_achievable_likes(self):
+        # חסה רק בסלט עם אגוזי מלך - ואם מישהו אלרגי לאגוזים, אי אפשר לכלול אותה
+        guests = [{"name": "דודה", "likes": ["חסה"]}, {"name": "דנה", "allergies": ["nuts"]}]
+        truth = find_best_menu(MenuTools(MenuRequest.from_dict({"num_guests": 4, "budget": 300, "guests": guests})))
+        self.assertEqual((truth["total_likes"], truth["max_likes"]), (1, 0))
+
 
 class TestUI(unittest.TestCase):
 

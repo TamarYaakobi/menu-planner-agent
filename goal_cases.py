@@ -7,6 +7,8 @@ expect:
   num_guests, budget
   profiles     - הגבלות החובה של האורחים: (אלרגיות, תזונה), בלי קשר לשמות ולסדר
   dislikes     - מילים שחייבות להופיע ברשימת ה"לא אוהב" של מישהו
+  likes        - מילים שחייבות להופיע ברשימת ה"אוהב" של מישהו
+  not_disliked - מילים שאסור שיופיעו ב"לא אוהב" (למשל משהו שמישהו אוהב, שהתהפך)
   unsupported  - מילים שחייבות להופיע ברשימת ההגבלות שהמערכת לא בודקת
   forbidden    - אלרגיות שאסור שיופיעו (למשל בוטנים שמופו בטעות ל-nuts)
 """
@@ -72,6 +74,17 @@ GOAL_CASES = [
      "expect": {"status": "ok", "num_guests": 10, "budget": 250, "profiles": [(("dairy",), None)]}},
     {"text": "4 סועדים, 120 שקל, כולם טבעונים",
      "expect": {"status": "ok", "num_guests": 4, "budget": 120, "profiles": [((), "vegan")]}},
+    # המשפט שחשף את הבאג: "שאוהבת חסה" פוענח כ"לא אוהבת חסה"
+    {"text": "אני מארחת השבוע את סבתא שלי שלא אוהבת חריף, דוד שלי שרגיש לחלב ודודה שלי שאוהבת חסה, "
+             "אני רוצה ארוחה שלא תעלה יותר מ300 שקל",
+     "expect": {"status": "ok", "num_guests": 4, "budget": 300, "profiles": [(("dairy",), None)],
+                "likes": ["חסה"], "not_disliked": ["חסה"]}},
+    {"text": "8 סועדים, 200 ש\"ח. נועה מתה על שקשוקה, ורון לא אוהב שקשוקה",
+     "expect": {"status": "ok", "num_guests": 8, "budget": 200, "profiles": [],
+                "likes": ["שקשוקה"], "dislikes": ["שקשוקה"]}},
+    {"text": "6 איש, 180 שקל. אבא אוהב עוף, אמא אוהבת סלט חסה, ואחי טבעוני",
+     "expect": {"status": "ok", "num_guests": 6, "budget": 180, "profiles": [((), "vegan")],
+                "likes": ["עוף", "חסה"]}},
 ]
 
 
@@ -96,6 +109,10 @@ def check_goal(expect: dict, result) -> list[str]:
 
     dislikes = " ".join(d for g in request["guests"] for d in g["dislikes"])
     problems += [f"חסר 'לא אוהב': {d}" for d in expect.get("dislikes", []) if d not in dislikes]
+    problems += [f"'{d}' הוא משהו שאוהבים - לא אמור להיות ב'לא אוהב'"
+                 for d in expect.get("not_disliked", []) if d in dislikes]
+    likes = " ".join(x for g in request["guests"] for x in g.get("likes", []))
+    problems += [f"חסר 'אוהב': {x}" for x in expect.get("likes", []) if x not in likes]
     unsupported = " ".join(result.unsupported)
     problems += [f"חסרה הגבלה לא נתמכת: {u}" for u in expect.get("unsupported", []) if u not in unsupported]
     allergies = {a for g in request["guests"] for a in g["allergies"]}

@@ -42,6 +42,9 @@ SYSTEM_PROMPT = """אתה אג'נט שמתכנן תפריט לארוחה משפ�
   התוספת, הירקות והקינוח חייבים להתאים לכל האורחים.
 - העדפות (מרכיבים שאורח לא אוהב): לכל אורח צריכה להיות מנה עיקרית שמותר לו לאכול ושאין בה מרכיב שהוא לא אוהב,
   ולכל היותר מנה אחת מהשאר עם מרכיב שהוא לא אוהב.
+- אוהב/ת (העדפה רכה): נסה לכלול מנה עם מה שהאורח אוהב - אבל רק אם התפריט עדיין עומד בכל הכללים
+  ובתקציב. זה הכי פחות חשוב: אף פעם לא על חשבון אלרגיה, תזונה, "לא אוהב" או תקציב.
+  check_guests מדווח מה מזה כבר בתפריט (likes), ו-search_recipes עם include_any מוצא מנות שמתאימות.
 
 איך לעבוד:
 - אתה מחליט באיזה סדר להשתמש בכלים ומה לבדוק.
@@ -91,6 +94,9 @@ TOOL_SCHEMAS = [
                        "description": "להחזיר רק מנות שמתאימות לתזונה הזו"},
               "exclude_ingredients": {"type": "array", "items": {"type": "string"},
                                       "description": "להוציא מנות שמכילות מרכיבים אלה (התאמה חלקית של שם)"},
+              "include_any": {"type": "array", "items": {"type": "string"},
+                              "description": "רק מנות שיש בהן לפחות אחד מאלה, בשם המנה או במרכיב - "
+                                             "למשל מה שאורח אוהב"},
           },
           ["category"]),
     _tool("calculate_cost",
@@ -99,7 +105,7 @@ TOOL_SCHEMAS = [
           {"menu": _MENU_SCHEMA}, ["menu"]),
     _tool("check_guests",
           "בודק את התפריט מול האילוצים וההעדפות של כל האורחים. מחזיר רשימת הפרות "
-          "(type=hard לאילוץ חובה, type=soft להעדפה).",
+          "(type=hard לאילוץ חובה, type=soft להעדפה), ו-likes: מה ממה שאורחים אוהבים כבר בתפריט.",
           {"menu": _MENU_SCHEMA}, ["menu"]),
     _tool("suggest_swaps",
           "לכל מנה בתפריט: עד 3 מנות מאותה קטגוריה שאפשר לשים במקומה כך שהתפריט יתאים לכל האורחים, "
@@ -134,6 +140,8 @@ def describe_request(request: MenuRequest) -> str:
             parts.append(f"תזונה: {DIETS[g.diet]} ({g.diet})")
         if g.dislikes:
             parts.append("לא אוהב/ת: " + ", ".join(g.dislikes))
+        if g.likes:
+            parts.append("אוהב/ת: " + ", ".join(g.likes))
         lines.append(f"- {g.name}: " + "; ".join(parts or ["אין הגבלות"]))
     return "\n".join(lines)
 
@@ -306,9 +314,11 @@ def summarize(name: str, r: dict) -> str:
             text += " | ⚠ חסר מחיר: " + ", ".join(m["ingredient"] for m in r["missing_prices"])
         return text
     if name == "check_guests":
+        likes = "".join(f" | {'❤️' if x['in_menu'] else '🤍'} {x['guest']}: {x['likes']}" for x in r.get("likes", []))
         if r["all_satisfied"]:
-            return "✓ כל האורחים מסודרים"
-        return "✗ " + "".join(f"\n     - [{v['type']}] {v['guest']}: {v['problem']}" for v in r["violations"])
+            return "✓ כל האורחים מסודרים" + likes
+        return "✗" + likes + "".join(f"\n     - [{v['type']}] {v['guest']}: {v['problem']}"
+                                     for v in r["violations"])
     if name == "suggest_swaps":
         swap = r.get("best_swap") or r.get("best_double_swap")
         if swap:
@@ -350,6 +360,9 @@ def print_success(approved: dict):
     print(f"  ירקות:   {menu['vegetable']}")
     print(f"  קינוח:   {menu['dessert']}")
     print(f"\n  עלות: {approved['total_cost']:.2f} ש\"ח ({approved['cost_per_guest']:.2f} לסועד)")
+    for like in approved.get("likes", []):
+        where = f"✓ ב{', '.join(like['dishes'])}" if like["in_menu"] else "✗ לא נכנס לתפריט"
+        print(f"  {'❤️' if like['in_menu'] else '🤍'} {like['guest']} אוהב/ת {like['likes']}: {where}")
     print("\n🛒 רשימת קניות:")
     for item in approved["shopping_list"]:
         print(f"  • {item['item']}: {item['needed']:g} {item['unit']} "

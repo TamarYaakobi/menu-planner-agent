@@ -126,6 +126,36 @@ SCENARIOS = [
         ]},
     },
     {
+        "id": "aunt_likes_lettuce",
+        "title": "הדודה אוהבת חסה",
+        "description": "העדפה חיובית שאפשר לממש: הדודה אוהבת חסה, והדוד רגיש לחלב. "
+                       "האג'נט צריך לכלול מנה עם חסה, בלי לפגוע בדוד.",
+        "expect": "success",
+        "request": {"num_guests": 4, "budget": 300, "guests": [
+            {"name": "דוד", "allergies": ["dairy"]},
+            {"name": "דודה", "likes": ["חסה"]},
+        ]},
+    },
+    {
+        "id": "like_vs_budget",
+        "title": "אוהב מול תקציב",
+        "description": "האורחים של ארוחת שישי, ועוד אורח שאוהב סלמון - אבל אין תפריט עם סלמון בתקציב. "
+                       "'אוהב' הוא העדפה רכה: האג'נט צריך לוותר עליה, לא על התקציב.",
+        "expect": "success",
+        "request": {"num_guests": 10, "budget": 146, "guests": _FRIDAY_GUESTS + [{"name": "גיל", "likes": ["סלמון"]}]},
+    },
+    {
+        "id": "like_vs_allergy",
+        "title": "אוהב מול אלרגיה",
+        "description": "שירה אוהבת אגוזי מלך ושקשוקה, ודנה אלרגית לאגוזים. האלרגיה גוברת - "
+                       "אפשר לכלול רק את השקשוקה.",
+        "expect": "success",
+        "request": {"num_guests": 8, "budget": 300, "guests": [
+            {"name": "דנה", "allergies": ["nuts"]},
+            {"name": "שירה", "likes": ["אגוזי מלך", "שקשוקה"]},
+        ]},
+    },
+    {
         "id": "single_guest",
         "title": "סועד יחיד",
         "description": "ארוחה לאדם אחד. בודק שהחישובים עובדים גם בכמויות קטנות.",

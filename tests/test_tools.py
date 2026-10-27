@@ -214,6 +214,45 @@ class TestSuggestSwaps(unittest.TestCase):
         self.assertEqual(menu, VALID_MENU)
 
 
+class TestLikes(unittest.TestCase):
+    """'אוהב/ת' - העדפה רכה: מדווחת, אבל לעולם לא משנה אם התפריט תקין."""
+
+    def test_like_matches_ingredient_or_dish_name(self):
+        tools = make_tools(guests=[{"name": "דודה", "likes": ["חסה", "שקשוקה", "עוף"]}])
+        menu = dict(VALID_MENU, vegetable="סלט חסה עם אגוזי מלך")
+        report = {x["likes"]: x for x in tools.check_guests(menu)["likes"]}
+        self.assertEqual(report["חסה"]["dishes"], ["סלט חסה עם אגוזי מלך"])  # מרכיב
+        self.assertFalse(report["שקשוקה"]["in_menu"])
+        self.assertTrue(report["עוף"]["in_menu"])                              # "עוף" בשם המנה ובמרכיב
+
+    def test_like_never_breaks_validity(self):
+        without = make_tools(guests=[{"name": "דנה", "allergies": ["nuts"]}])
+        with_like = make_tools(guests=[{"name": "דנה", "allergies": ["nuts"], "likes": ["אגוזי מלך"]}])
+        menu = dict(VALID_MENU, vegetable="סלט חסה עם אגוזי מלך")  # היא אוהבת - אבל אלרגית
+        self.assertFalse(with_like.check_guests(menu)["all_satisfied"])
+        self.assertEqual(with_like.finalize_menu(menu)["approved"], without.finalize_menu(menu)["approved"])
+
+    def test_no_likes_no_report(self):
+        self.assertNotIn("likes", make_tools().check_guests(VALID_MENU))
+
+    def test_search_include_any(self):
+        tools = make_tools()
+        names = [r["name"] for r in tools.search_recipes("vegetable", include_any=["חסה"])["recipes"]]
+        self.assertEqual(names, ["סלט חסה עם אגוזי מלך"])
+        mains = [r["name"] for r in tools.search_recipes("main", include_any=["שקשוקה"])["recipes"]]
+        self.assertEqual(mains, ["שקשוקה"])  # לפי שם המנה
+
+    def test_finalize_reports_likes(self):
+        tools = make_tools(guests=[{"name": "דודה", "likes": ["חסה"]}])
+        result = tools.finalize_menu(dict(VALID_MENU, vegetable="סלט חסה עם אגוזי מלך"))
+        self.assertTrue(result["likes"][0]["in_menu"])
+
+    def test_empty_like_is_dropped(self):
+        request = MenuRequest.from_dict({"num_guests": 5, "budget": 100,
+                                         "guests": [{"name": "דודה", "likes": ["", " "]}]})
+        self.assertEqual(request.guests[0].likes, [])
+
+
 class TestFinalizeMenu(unittest.TestCase):
 
     def test_approves_valid_menu_with_shopping_list(self):
