@@ -21,6 +21,7 @@ from typing import Callable
 
 from openai import APIError, RateLimitError
 
+from chat_logic import format_amount
 from goal_parser import parse_goal, unknown_dislikes, unknown_likes
 from llm import ConfigError, ask_model, create_client, fallback_models
 from tools import ALLERGENS, CATEGORIES, DIETS, DataError, MenuRequest, MenuTools, load_json
@@ -378,12 +379,31 @@ def print_success(approved: dict):
     print(f"  קינוח:   {menu['dessert']}")
     print(f"\n  עלות: {approved['total_cost']:.2f} ש\"ח ({approved['cost_per_guest']:.2f} לסועד)")
     for like in approved.get("likes", []):
-        where = f"✓ ב{', '.join(like['dishes'])}" if like["in_menu"] else "✗ לא נכנס לתפריט"
+        where = f"✓ ב{', '.join(like['dishes'])}" if like["in_menu"] else f"✗ לא נכנס: {like.get('reason', '')}"
         print(f"  {'❤️' if like['in_menu'] else '🤍'} {like['guest']} אוהב/ת {like['likes']}: {where}")
+    for item in approved.get("compromises", []):
+        print(f"  🔸 {item['guest']} לא אוהב/ת {item['dislikes']}, ויש ב{item['dish']} "
+              f"(מותר עד מנה אחת): {item['reason']}")
     print("\n🛒 רשימת קניות:")
     for item in approved["shopping_list"]:
         print(f"  • {item['item']}: {item['needed']:g} {item['unit']} "
               f"→ {item['packages']} × {item['package_size']:g} {item['unit']}")
+
+
+def print_recipes(tools: MenuTools):
+    """המתכונים של התפריט שאושר, עם כמויות לפי מספר הסועדים."""
+    menu = tools.approved_menu["menu"]
+    print("\n📖 מתכונים:")
+    for dish in [*menu["mains"], menu["side"], menu["vegetable"], menu["dessert"]]:
+        card = tools.recipe_card(dish)
+        portion = " (60% מנה לסועד, כי יש שתי עיקריות)" if card["main_portion"] else ""
+        print(f"\n  🍳 {card['name']} - {card['time_minutes']} דקות, ל-{card['num_guests']} סועדים{portion}")
+        print("  מצרכים:")
+        for ing in card["ingredients"]:
+            print(f"    - {format_amount(ing['amount'], ing['unit'])} {ing['name']}")
+        print("  הכנה:")
+        for n, step in enumerate(card["steps"], 1):
+            print(f"    {n}. {step}")
 
 
 def print_failure(reason: str, best_cost: dict | None):
@@ -507,6 +527,7 @@ def main() -> int:
 
     if success:
         print_success(tools.approved_menu)
+        print_recipes(tools)
         return 0
     print_failure(agent.failure_reason, agent.best_cost)
     return 1
