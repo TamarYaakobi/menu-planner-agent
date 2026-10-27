@@ -300,6 +300,14 @@ class TestGuestCount(unittest.TestCase):
         result = parse_goal(client, "fake", "גם שרון מגיעה", previous=previous)
         self.assertEqual(result.request["num_guests"], 5)
 
+    def test_counted_in_without_breakdown_is_not_a_problem(self):
+        # באג שנמצא מול המודל האמיתי: בלי פירוט, כל אורח עם counted_in נחשב "לא נספר" - 3 ניסיונות מבוזבזים
+        from goal_parser import _evaluate
+        result = _evaluate("4 סועדים, 300 שקל. דני רגיש לחלב", {
+            "num_guests": 4, "budget_total": 300,
+            "guests": [dict(guest("דני", allergies=["dairy"]), counted_in="דני")]}, 1)
+        self.assertEqual(result.warnings, [])
+
 def submit(data, call_id="c1"):
     return reply(call("submit_request", data, call_id))
 
