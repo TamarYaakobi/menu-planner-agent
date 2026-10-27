@@ -237,6 +237,17 @@ class TestRateLimit(unittest.TestCase):
         self.assertEqual(_retry_delay(rate_limit_error("Please retry in 5.7s.")), 5.7)
         self.assertIsNone(_retry_delay(rate_limit_error("Please retry in 20h34m26.3s.")))
 
+    def test_daily_quota_message(self):
+        from llm import daily_quota_message
+        # הטקסט כמו שהגיע מ-Gemini, כשנגמרה המכסה היומית
+        daily = rate_limit_error("quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' "
+                                 "Please retry in 11h34m57.592122625s.")
+        self.assertIn("בעוד כ-12 שעות", daily_quota_message(daily))
+        self.assertIn("פחות משעה", daily_quota_message(rate_limit_error("PerDay. Please retry in 20m3s.")))
+        self.assertIsNone(daily_quota_message(rate_limit_error("PerMinute. Please retry in 5.7s.")))  # מכסה לדקה
+        self.assertIsNone(daily_quota_message(InternalServerError(
+            "PerDay", response=httpx2.Response(500, request=httpx2.Request("POST", "https://x")), body=None)))
+
     def test_daily_quota_is_raised_not_waited(self):
         agent, _, _ = make_agent(rate_limit_error("Please retry in 20h34m26.3s."))
         with self.assertRaises(RateLimitError):

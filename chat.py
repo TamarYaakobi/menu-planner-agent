@@ -21,7 +21,7 @@ from chat_logic import (STATE_KEYS, cost_answer, delete_conversation, format_rec
                         requested_dishes, save_conversation, shopping_html, steps_html, user_html, wants_recipes)
 from hebrew_page import mark_page_hebrew
 from goal_parser import parse_goal, unknown_dislikes, unknown_likes
-from llm import ConfigError, create_client, fallback_models
+from llm import ConfigError, create_client, daily_quota_message, fallback_models
 from tools import ALLERGENS, DIETS, MenuRequest, MenuTools
 
 WELCOME = """היי! אני אג'נט שמתכנן תפריט לארוחה 🍽️
@@ -192,7 +192,7 @@ def understand(text: str):
     except ConfigError as e:
         return say(f"❌ {e}")
     except APIError as e:
-        return say(f"😕 המודל לא זמין כרגע ({type(e).__name__}). נסי לשלוח שוב בעוד דקה.")
+        return say(model_error(e, "נסי לשלוח שוב בעוד דקה."))
     st.session_state.model = goal.model or st.session_state.model
 
     if goal.status == "needs_info":
@@ -217,6 +217,14 @@ def understand(text: str):
             else "לא מצאתי מה לשנות בבקשה - אם התכוונת למשהו אחר, נסי לנסח אחרת."
         return say(changed + "\n\nעכשיו הבקשה היא:\n\n" + describe_goal(goal) + "\n\n" + ask)
     say("הבנתי כך:\n\n" + describe_goal(goal) + "\n\n" + ask)
+
+
+def model_error(error: APIError, retry_hint: str) -> str:
+    """במכסה יומית "נסי שוב" מטעה - ניסיון חוזר לא יעזור עד שהיא מתחדשת."""
+    daily = daily_quota_message(error)
+    if daily:
+        return f"😕 {daily}"
+    return f"😕 המודל לא זמין כרגע ({type(error).__name__}). {retry_hint}"
 
 
 # ---------- התכנון ----------
@@ -259,7 +267,7 @@ def plan():
             success = agent.run()
         except APIError as e:
             status.update(label="המודל לא זמין", state="error", expanded=False)
-            return say(f"😕 המודל לא זמין כרגע ({type(e).__name__}). כתבי \"כן\" כדי לנסות שוב.")
+            return say(model_error(e, "כתבי \"כן\" כדי לנסות שוב."))
         status.update(label=f"תכננתי ב-{agent.steps_used} צעדים", state="complete", expanded=False)
 
     # החלון החי מוצג רק עכשיו. בהיסטוריה, הצעדים נשמרים בתוך הודעת התשובה (בחלון מתקפל)

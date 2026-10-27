@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import httpx2
-from openai import APITimeoutError
+from openai import APITimeoutError, RateLimitError
 from streamlit.testing.v1 import AppTest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -208,6 +208,14 @@ class TestChat(ChatTestCase):
         self.parse.side_effect = APITimeoutError(request=httpx2.Request("POST", "https://example.com"))
         reply = self.send("4 איש, 300 שקל")
         self.assertIn("המודל לא זמין", reply)
+
+    def test_daily_quota_does_not_say_try_again(self):
+        response = httpx2.Response(429, request=httpx2.Request("POST", "https://example.com"))
+        self.parse.side_effect = RateLimitError("PerDay. Please retry in 3h10m2s.", response=response, body=None)
+        reply = self.send("4 איש, 300 שקל")
+        self.assertIn("המכסה היומית", reply)
+        self.assertIn("בעוד כ-3 שעות", reply)
+        self.assertNotIn("נסי לשלוח שוב", reply)  # לא יעזור עד שהמכסה מתחדשת
 
     def test_off_topic_resets(self):
         self.parse.return_value = ParsedGoal("off_topic", error="לא ארוחה")

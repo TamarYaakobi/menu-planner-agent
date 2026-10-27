@@ -341,7 +341,7 @@ def batch_tab(model: str, max_steps: int):
 
 # ---------- הדף ----------
 
-load_dotenv()
+load_dotenv(override=True)  # שינוי ב-.env נכנס לתוקף בלי הפעלה מחדש (כמו ב-llm.py)
 with st.sidebar:
     st.header("⚙️ הגדרות")
     scenario_id = st.selectbox("תרחיש", list(SCENARIO_BY_ID), format_func=lambda sid: SCENARIO_BY_ID[sid]["title"])

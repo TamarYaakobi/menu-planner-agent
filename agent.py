@@ -23,7 +23,7 @@ from openai import APIError, RateLimitError
 
 from chat_logic import format_amount
 from goal_parser import parse_goal, unknown_dislikes, unknown_likes
-from llm import ConfigError, ask_model, create_client, fallback_models
+from llm import ConfigError, ask_model, create_client, daily_quota_message, fallback_models
 from tools import ALLERGENS, CATEGORIES, DIETS, DataError, MenuRequest, MenuTools, load_json
 
 MAX_STEPS = 15         # מגבלת קריאות למודל - מונעת לולאה אינסופית ועלות לא צפויה
@@ -417,6 +417,10 @@ def print_failure(reason: str, best_cost: dict | None):
 
 def print_model_error(error: APIError):
     """הודעה קצרה וברורה, במקום JSON ארוך מהשרת."""
+    daily = daily_quota_message(error)
+    if daily:
+        print(f"\n❌ {daily}")
+        return
     if isinstance(error, RateLimitError):
         print("\n❌ נגמרה מכסת הבקשות למודל.")
     else:
