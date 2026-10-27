@@ -28,8 +28,8 @@ GOAL_CASES = [
      "expect": {"status": "ok", "num_guests": 10, "budget": 200,
                 "profiles": [((), "vegetarian"), (("dairy",), None)]}},
     {"text": "15 איש, 400 ש\"ח, אבא אלרגי לבוטנים",
-     "expect": {"status": "ok", "num_guests": 15, "budget": 400, "profiles": [],
-                "unsupported": ["בוטנים"], "forbidden": ["nuts"]}},
+     "expect": {"status": "ok", "num_guests": 15, "budget": 400, "profiles": [(("peanuts",), None)],
+                "forbidden": ["nuts"]}},
     {"text": "אני רוצה לארח את המשפחה בשבת",
      "expect": {"status": "needs_info"}},
     {"text": "20 אורחים, נועה טבעונית",
@@ -47,8 +47,7 @@ GOAL_CASES = [
     {"text": "ארוחה כשרה ל-10 אנשים ב-300 שקל",
      "expect": {"status": "ok", "num_guests": 10, "budget": 300, "profiles": [], "unsupported": ["כשר"]}},
     {"text": "5 איש, 100 שקל, דנה אלרגית לשומשום ולביצים",
-     "expect": {"status": "ok", "num_guests": 5, "budget": 100, "profiles": [(("eggs",), None)],
-                "unsupported": ["שומשום"]}},
+     "expect": {"status": "ok", "num_guests": 5, "budget": 100, "profiles": [(("eggs", "sesame"), None)]}},
     {"text": "אני, בעלי ושלושת הילדים. 150 שקל.",
      "expect": {"status": "ok", "num_guests": 5, "budget": 150, "profiles": []}},
     {"text": "12 סועדים, תקציב של עד 300 ש\"ח. גיל ומאיה לא אוהבים בצל, וגיל גם אלרגי לחלב",
@@ -77,7 +76,8 @@ GOAL_CASES = [
     # המשפט שחשף את הבאג: "שאוהבת חסה" פוענח כ"לא אוהבת חסה"
     {"text": "אני מארחת השבוע את סבתא שלי שלא אוהבת חריף, דוד שלי שרגיש לחלב ודודה שלי שאוהבת חסה, "
              "אני רוצה ארוחה שלא תעלה יותר מ300 שקל",
-     "expect": {"status": "ok", "num_guests": 4, "budget": 300, "profiles": [(("dairy",), None)],
+     # מספר הסועדים לא נאמר במפורש: גם להסיק 4 (ולהציג את ההנחה) וגם לשאול - שתיהן תשובות נכונות
+     "expect": {"status": ["ok", "needs_info"], "num_guests": 4, "budget": 300, "profiles": [(("dairy",), None)],
                 "likes": ["חסה"], "not_disliked": ["חסה"]}},
     {"text": "8 סועדים, 200 ש\"ח. נועה מתה על שקשוקה, ורון לא אוהב שקשוקה",
      "expect": {"status": "ok", "num_guests": 8, "budget": 200, "profiles": [],
@@ -85,6 +85,13 @@ GOAL_CASES = [
     {"text": "6 איש, 180 שקל. אבא אוהב עוף, אמא אוהבת סלט חסה, ואחי טבעוני",
      "expect": {"status": "ok", "num_guests": 6, "budget": 180, "profiles": [((), "vegan")],
                 "likes": ["עוף", "חסה"]}},
+    {"text": "8 סועדים, 250 שקל. רון רגיש לסויה",
+     "expect": {"status": "ok", "num_guests": 8, "budget": 250, "profiles": [(("soy",), None)]}},
+    # "בערך" - היעד 400, ומותר עד 450
+    {"text": "6 סועדים, תקציב של בערך 400 שקל",
+     "expect": {"status": "ok", "num_guests": 6, "budget": 450, "target": 400, "profiles": []}},
+    {"text": "כ-10 אנשים, עד 300 שקל",
+     "expect": {"status": "ok", "num_guests": 10, "budget": 300, "target": None, "profiles": []}},
 ]
 
 
@@ -101,6 +108,8 @@ def check_goal(expect: dict, result) -> list[str]:
         problems.append(f"סועדים: {request['num_guests']} במקום {expect['num_guests']}")
     if abs(request["budget"] - expect["budget"]) > 0.01:
         problems.append(f"תקציב: {request['budget']} במקום {expect['budget']}")
+    if "target" in expect and request.get("target_budget") != expect["target"]:
+        problems.append(f"יעד תקציב: {request.get('target_budget')} במקום {expect['target']}")
 
     profiles = {(tuple(sorted(g["allergies"])), g["diet"]) for g in request["guests"] if g["allergies"] or g["diet"]}
     wanted = {(tuple(sorted(a)), d) for a, d in expect["profiles"]}
@@ -118,3 +127,27 @@ def check_goal(expect: dict, result) -> list[str]:
     allergies = {a for g in request["guests"] for a in g["allergies"]}
     problems += [f"אלרגיה שלא הייתה צריכה להופיע: {a}" for a in expect.get("forbidden", []) if a in allergies]
     return problems
+
+
+# עדכונים לבקשה קיימת - המקום שבו, בשיחה ארוכה, המודל התחיל לערבב מי רגיש למה.
+# הבקשה ההתחלתית כבר מובנית (כמו בצ'אט), והמודל מקבל אותה + הודעת העדכון בלבד
+_BASE = {"num_guests": 4, "budget": 300, "guests": [
+    {"name": "דוד", "allergies": ["dairy"], "diet": None, "dislikes": [], "likes": []},
+    {"name": "דודה", "allergies": [], "diet": None, "dislikes": [], "likes": ["חסה"]},
+    {"name": "סבתא", "allergies": [], "diet": None, "dislikes": ["פטריות"], "likes": []}]}
+
+UPDATE_CASES = [
+    {"previous": _BASE, "text": "בעצם התקציב 200",
+     "expect": {"status": "ok", "num_guests": 4, "budget": 200, "profiles": [(("dairy",), None)],
+                "likes": ["חסה"], "dislikes": ["פטריות"]}},
+    {"previous": _BASE, "text": "גם שרון מגיעה, והיא אלרגית לסויה",
+     "expect": {"status": "ok", "num_guests": 5, "budget": 300, "profiles": [(("dairy",), None), (("soy",), None)],
+                "likes": ["חסה"], "dislikes": ["פטריות"]}},
+    {"previous": _BASE, "text": "דוד בעצם לא רגיש לחלב",
+     "expect": {"status": "ok", "num_guests": 4, "budget": 300, "profiles": [], "likes": ["חסה"]}},
+    {"previous": _BASE, "text": "סבתא לא מגיעה",
+     "expect": {"status": "ok", "num_guests": 3, "budget": 300, "profiles": [(("dairy",), None)], "likes": ["חסה"]}},
+    {"previous": _BASE, "text": "התקציב בערך 400",
+     "expect": {"status": "ok", "num_guests": 4, "budget": 450, "target": 400, "profiles": [(("dairy",), None)],
+                "likes": ["חסה"], "dislikes": ["פטריות"]}},
+]

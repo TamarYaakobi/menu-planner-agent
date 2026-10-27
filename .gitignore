@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# שיחות מהצאט - נשארות רק במחשב
+conversations/

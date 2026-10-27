@@ -37,6 +37,36 @@ class TestCrossCheck(unittest.TestCase):
         self.assertProblem("דני צליאק", parsed())
         self.assertProblem("דני צליאק", parsed([guest(allergies=["gluten"])]), False)
 
+    def test_new_allergens(self):
+        # סויה, שומשום ובוטנים - פעם היו "לא נתמכים", עכשיו אלרגיות רגילות
+        for text, allergen in (("רון רגיש לסויה", "soy"), ("דנה אלרגית לשומשום", "sesame"),
+                               ("אבא אלרגי לבוטנים", "peanuts"), ("בלי טחינה בבקשה, אלרגיה", "sesame")):
+            with self.subTest(text):
+                self.assertProblem(text, parsed())
+                self.assertProblem(text, parsed([guest(allergies=[allergen])]), False)
+        # בוטנים הם לא אגוזים: מי שאלרגי לבוטנים ומסומן nuts - עדיין חסר
+        self.assertProblem("אבא אלרגי לבוטנים", parsed([guest(allergies=["nuts"])]))
+
+    def test_approximate_budget(self):
+        from goal_parser import is_approximate
+        for text, expected in (("תקציב של בערך 400", True), ("בערך 400 שקל", True), ("כ-400 ש\"ח", True),
+                               ("around 400 shekels", True), ("עד 400 שקל", False), ("400 שקל", False),
+                               ("כ-10 אנשים, 300 שקל", False)):
+            with self.subTest(text):
+                self.assertEqual(is_approximate(text), expected)
+        request, _ = build_request({"num_guests": 4, "budget_total": 400}, approximate=True)
+        self.assertEqual((request["target_budget"], request["budget"]), (400, 450))
+        MenuRequest.from_dict(request)  # תקין
+
+    def test_model_flag_or_text_marks_approximate(self):
+        # הקוד מזהה "בערך" גם אם המודל לא סימן, והמודל יכול לסמן גם אם הקוד לא זיהה
+        result = parse_goal(FakeClient(submit(parsed(budget_total=400))), "fake", "4 איש, תקציב של בערך 400")
+        self.assertEqual(result.request["target_budget"], 400)
+        self.assertIn("בקירוב", " ".join(result.assumptions))
+        result = parse_goal(FakeClient(submit(parsed(budget_total=400, budget_approximate=True))), "fake",
+                            "4 איש, יש לי בערך 400")
+        self.assertEqual(result.request["budget"], 450)
+
     def test_hebrew_prefixes(self):
         for text in ("אלרגי לגלוטן", "ולגלוטן", "אלרגית לביצים", "רגיש ללקטוז", "אלרגי לאגוזים", "ומהדגים"):
             with self.subTest(text):
@@ -66,8 +96,8 @@ class TestCrossCheck(unittest.TestCase):
 
     def test_unsupported_restriction_is_added_by_code(self):
         # מודל שהתעקש לא לרשום "סוכרתית" - הקוד מוסיף בעצמו
-        self.assertEqual(len(detect_unsupported("סבתא סוכרתית, אבא אלרגי לבוטנים", parsed())), 2)
-        self.assertEqual(detect_unsupported("אבא אלרגי לבוטנים", parsed(unsupported=["בוטנים"])), [])
+        self.assertEqual(len(detect_unsupported("סבתא סוכרתית, וארוחה כשרה", parsed())), 2)
+        self.assertEqual(detect_unsupported("ארוחה כשרה", parsed(unsupported=["כשרות"])), [])
         self.assertTrue(detect_unsupported("ארוחה כשרה", parsed()))
         # הנחה מוצגת כמידע, לא כאזהרה - לא מספיקה
         self.assertTrue(detect_unsupported("סבתא סוכרתית", parsed(assumptions=["סבתא סוכרתית, לא נלקח בחשבון"])))
@@ -205,6 +235,53 @@ class TestParseGoalLoop(unittest.TestCase):
         parse_goal(client, "fake", "10 איש, 200 שקל, צליאק")
         answered = {m["tool_call_id"] for m in client.requests[1] if m["role"] == "tool"}
         self.assertEqual(answered, {"a", "b"})
+
+
+class TestUpdates(unittest.TestCase):
+    """עדכון לבקשה קיימת: המודל מקבל את הבקשה המובנית + ההודעה החדשה, והקוד בודק מה השתנה."""
+
+    def setUp(self):
+        from goal_parser import ParsedGoal
+        self.previous = ParsedGoal("ok", request={"num_guests": 4, "budget": 300, "guests": [
+            guest("דני", allergies=["dairy"]), guest("סבתא", likes=["חסה"])]})
+
+    def update(self, text, *replies):
+        client = FakeClient(*replies)
+        return parse_goal(client, "fake", text, previous=self.previous), client
+
+    def test_model_gets_current_request_and_only_the_new_message(self):
+        same_guests = [guest("דני", allergies=["dairy"]), guest("סבתא", likes=["חסה"])]
+        result, client = self.update("בעצם התקציב 200", submit(parsed(same_guests, num_guests=4, budget_total=200)))
+        sent = client.requests[0][1]["content"]
+        self.assertIn("\"budget_total\": 300", sent)     # הבקשה הנוכחית, מובנית
+        self.assertIn("בעצם התקציב 200", sent)
+        self.assertEqual(result.changes, ["תקציב: מ-300 ל-200"])
+        self.assertEqual(result.warnings, [])
+
+    def test_allergy_lost_in_update_is_sent_back(self):
+        # הבאג מהשיחה הארוכה: עדכון של תקציב "איבד" את האלרגיה של דני
+        lost = parsed([guest("דני"), guest("סבתא", likes=["חסה"])], num_guests=4, budget_total=200)
+        kept = parsed([guest("דני", allergies=["dairy"]), guest("סבתא", likes=["חסה"])], num_guests=4, budget_total=200)
+        result, client = self.update("בעצם התקציב 200", submit(lost), submit(kept))
+        self.assertEqual((result.status, result.attempts), ("ok", 2))
+        self.assertIn("חלב", client.requests[1][-1]["content"])
+
+    def test_removing_on_purpose_is_allowed(self):
+        without_dani = parsed([guest("סבתא", likes=["חסה"])], num_guests=3, budget_total=300)
+        result, _ = self.update("דני לא מגיע", submit(without_dani))
+        self.assertEqual(result.warnings, [])
+        self.assertIn("הוסר/ה: דני", result.changes)
+
+    def test_changes_are_described(self):
+        from goal_parser import describe_changes
+        old = {"num_guests": 4, "budget": 300, "guests": [guest("דני", allergies=["dairy"])]}
+        new = {"num_guests": 5, "budget": 450, "target_budget": 400,
+               "guests": [guest("דני", allergies=["dairy", "nuts"]), guest("נועה", diet="vegan")]}
+        changes = describe_changes(old, new)
+        self.assertIn("סועדים: מ-4 ל-5", changes)
+        self.assertIn("תקציב: מ-300 ל-בערך 400 (עד 450)", changes)
+        self.assertTrue(any(c.startswith("נוסף/ה: נועה") for c in changes))
+        self.assertTrue(any(c.startswith("דני:") and "אגוזים" in c for c in changes))
 
 
 class TestUnderstandGoalConversation(unittest.TestCase):

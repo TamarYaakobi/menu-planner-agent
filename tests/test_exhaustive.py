@@ -21,18 +21,20 @@ BY_NAME = {r["name"]: r for r in RECIPES}
 BY_CATEGORY = {c: [r["name"] for r in RECIPES if r["category"] == c] for c in ("main", "side", "vegetable", "dessert")}
 
 # סיווג של כל מרכיב במאגר. מרכיב חדש שלא מופיע כאן יכשיל את הבדיקה - חייבים לסווג אותו במפורש
-INGREDIENT_ALLERGEN = {
-    "קמח": "gluten", "פסטה": "gluten", "פירורי לחם": "gluten", "פתיתים": "gluten", "קוסקוס": "gluten",
-    "ביצים": "eggs",
-    "חמאה": "dairy", "חלב": "dairy", "שמנת לבישול": "dairy", "פרמזן": "dairy", "גבינה בולגרית": "dairy",
-    "שקדים": "nuts", "אגוזי מלך": "nuts",
-    "פילה סלמון": "fish",
+INGREDIENT_ALLERGENS = {
+    "קמח": {"gluten"}, "פסטה": {"gluten"}, "פתיתים": {"gluten"}, "קוסקוס": {"gluten"},
+    # מוצרים קנויים - מסומנים גם לפי "עלול להכיל" (שמרני: עדיף להחמיר באלרגיות)
+    "פירורי לחם": {"gluten", "sesame", "soy"}, "שוקולד מריר": {"soy"},
+    "ביצים": {"eggs"},
+    "חמאה": {"dairy"}, "חלב": {"dairy"}, "שמנת לבישול": {"dairy"}, "פרמזן": {"dairy"}, "גבינה בולגרית": {"dairy"},
+    "שקדים": {"nuts"}, "אגוזי מלך": {"nuts"},
+    "פילה סלמון": {"fish"},
 }
 NOT_VEGETARIAN = {"שוקי עוף", "חזה עוף", "בשר בקר טחון", "פילה סלמון"}
 SAFE = {
     "תפוחי אדמה", "בטטה", "בצל", "שום", "עגבניות", "מלפפונים", "פלפל אדום", "קישואים", "פטריות שמפיניון",
     "חסה", "לימון", "פטרוזיליה", "שמיר", "רוזמרין", "תפוחים", "בננות", "תפוזים", "אבטיח", "אורז",
-    "עדשים כתומות", "עדשים ירוקות", "סוכר", "שוקולד מריר", "חלב קוקוס", "רסק עגבניות", "זיתים",
+    "עדשים כתומות", "עדשים ירוקות", "סוכר", "חלב קוקוס", "רסק עגבניות", "זיתים",
     "שמן זית", "שמן קנולה", "פפריקה", "אבקת קארי", "כמהין",
 }
 LIKE_POOL = ["חסה", "שקשוקה", "סלמון", "עוף", "שוקולד", "אבטיח", "פסטה", "עדשים", "פטריות"]
@@ -124,12 +126,12 @@ class TestAllergenData(unittest.TestCase):
 
     def test_every_ingredient_is_classified(self):
         ingredients = {i["name"] for r in RECIPES for i in r["ingredients"]} | set(PRICES)
-        unclassified = ingredients - set(INGREDIENT_ALLERGEN) - NOT_VEGETARIAN - SAFE
+        unclassified = ingredients - set(INGREDIENT_ALLERGENS) - NOT_VEGETARIAN - SAFE
         self.assertFalse(unclassified, f"מרכיבים חדשים - צריך לסווג אותם: {unclassified}")
 
     def test_allergen_tags_match_ingredients(self):
         for r in RECIPES:
-            expected = {INGREDIENT_ALLERGEN[i["name"]] for i in r["ingredients"] if i["name"] in INGREDIENT_ALLERGEN}
+            expected = set().union(*(INGREDIENT_ALLERGENS.get(i["name"], set()) for i in r["ingredients"]))
             self.assertEqual(set(r["allergens"]), expected, r["name"])
 
     def test_diet_tags_match_ingredients(self):

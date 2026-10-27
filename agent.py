@@ -56,6 +56,8 @@ SYSTEM_PROMPT = """אתה אג'נט שמתכנן תפריט לארוחה משפ�
   השתמש בו כדי להחליט מה להחליף, במקום לנחש.
   ההחלפות שהוא מציע כבר נבדקו מול כל האורחים, ו-new_total הוא העלות אחרי ההחלפה - אין צורך לבדוק אותן שוב.
   החלפות בתוספת, בירקות ובקינוח לא משפיעות זו על זו, אז אפשר לבצע כמה מהן יחד ולבדוק פעם אחת.
+- אם יש יעד תקציב ("בערך"), calculate_cost מחזיר גם within_target. העדף תפריט ביעד; תפריט מעל היעד ועד
+  התקציב המקסימלי - רק אחרי ש-suggest_swaps הראה שאין דרך להוזיל אותו ליעד.
 - המשימה מסתיימת בהצלחה רק כש-finalize_menu מחזיר approved=true.
 - report_failure רק אחרי ש-suggest_swaps הראה שאין עוד החלפה שמוזילה את התפריט, ועדיין אין פתרון.
   במקרה כזה, ציין בהסבר את התפריט הזול ביותר שהגעת אליו ואת העלות שלו.
@@ -129,7 +131,11 @@ MENU_TOOLS = {"search_recipes", "calculate_cost", "check_guests", "suggest_swaps
 
 def describe_request(request: MenuRequest) -> str:
     """המטרה כטקסט: מוצגת למשתמש, ונשלחת למודל (יחד עם ההוראה לתכנן)."""
-    lines = [f"מספר סועדים: {request.num_guests}", f"תקציב: {request.budget:g} ש\"ח"]
+    budget = f"תקציב: {request.budget:g} ש\"ח"
+    if request.target_budget is not None:
+        budget = (f"תקציב: בערך {request.target_budget:g} ש\"ח - נסה להישאר ב-{request.target_budget:g}, "
+                  f"מותר עד {request.budget:g} רק אם אין ברירה")
+    lines = [f"מספר סועדים: {request.num_guests}", budget]
     if request.guests:
         lines.append("אורחים עם אילוצים:")
     for g in request.guests:
@@ -153,9 +159,12 @@ class MenuAgent:
     """
 
     def __init__(self, client, model: str, tools: MenuTools, max_steps: int = MAX_STEPS,
-                 on_event: Callable[[str, dict], None] | None = None, fallbacks: list[str] | None = None):
+                 on_event: Callable[[str, dict], None] | None = None, fallbacks: list[str] | None = None,
+                 previous_menu: dict | None = None):
+        """previous_menu: {"menu", "total_cost"} מתכנון קודם בשיחה - נקודת התחלה, כדי לא להתחיל מאפס."""
         self.client = client
         self.fallbacks = fallbacks or []
+        self.previous_menu = previous_menu
         self.model = model
         self.tools = tools
         self.max_steps = max_steps
@@ -169,11 +178,13 @@ class MenuAgent:
 
     def run(self) -> bool:
         """מריץ את הלולאה. מחזיר True אם התפריט אושר."""
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": describe_request(self.tools.request)
-             + f"\n\nתכנן את התפריט. יש לך עד {self.max_steps} צעדים."},
-        ]
+        goal = describe_request(self.tools.request) + f"\n\nתכנן את התפריט. יש לך עד {self.max_steps} צעדים."
+        if self.previous_menu:
+            # הבקשה אולי השתנתה מאז, ולכן זו רק נקודת התחלה - הכלים בודקים אותה מחדש
+            goal += (f"\n\nבתכנון קודם, לפני שהבקשה עודכנה, הגעת לתפריט: {short_args(self.previous_menu)} "
+                     f"({self.previous_menu['total_cost']:.0f} ש\"ח). כדאי להתחיל ממנו ולבדוק אותו מול הבקשה "
+                     f"המעודכנת, במקום לחפש מאפס.")
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": goal}]
         nudges = 0
 
         for step in range(1, self.max_steps + 1):
@@ -310,6 +321,8 @@ def summarize(name: str, r: dict) -> str:
     if name == "calculate_cost":
         status = "✓ בתקציב" if r["within_budget"] else f"✗ חריגה של {-r['difference']:.0f} ש\"ח"
         text = f"{r['total_cost']:.0f} ש\"ח מתוך {r['budget']:g} {status}"
+        if "target_budget" in r:
+            text += " (ביעד)" if r["within_target"] else f" (מעל היעד של {r['target_budget']:g})"
         if not r["complete"]:
             text += " | ⚠ חסר מחיר: " + ", ".join(m["ingredient"] for m in r["missing_prices"])
         return text

@@ -19,8 +19,8 @@ from itertools import combinations, product
 from openai import APIError, RateLimitError
 
 from agent import MAX_STEPS, MenuAgent, print_event
-from goal_cases import GOAL_CASES, check_goal
-from goal_parser import parse_goal
+from goal_cases import GOAL_CASES, UPDATE_CASES, check_goal
+from goal_parser import ParsedGoal, parse_goal
 from llm import ConfigError, create_client
 from scenarios import SCENARIOS
 from tools import DataError, MenuRequest, MenuTools
@@ -175,8 +175,23 @@ def run_goal_cases(model: str | None, verbose: bool) -> int:
                                  ("אזהרות", result.warnings)):
                 if items:
                     print(f"       {label}: {items}")
+    print("\n── עדכונים לבקשה קיימת ──")
+    for case in UPDATE_CASES:
+        previous = ParsedGoal("ok", request=case["previous"])
+        try:
+            result = parse_goal(client, model or default_model, case["text"], previous=previous)
+        except APIError as e:
+            print(f"⚠️ {case['text']}\n     - שגיאה בתקשורת עם המודל ({type(e).__name__})")
+            continue
+        problems = check_goal(case["expect"], result)
+        passed += not problems
+        print(f"{'✅' if not problems else '❌'} {case['text']}")
+        for p in problems:
+            print(f"     - {p}")
+        if verbose or problems:
+            print(f"     ← שינויים: {result.changes}, אזהרות: {result.warnings}, ניסיונות: {result.attempts}")
     print("\n" + "═" * 50)
-    print(f"עברו: {passed}/{len(GOAL_CASES)}")
+    print(f"עברו: {passed}/{len(GOAL_CASES) + len(UPDATE_CASES)}")
     return 0
 
 

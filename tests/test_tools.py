@@ -214,6 +214,30 @@ class TestSuggestSwaps(unittest.TestCase):
         self.assertEqual(menu, VALID_MENU)
 
 
+class TestTargetBudget(unittest.TestCase):
+    """"בערך 400": היעד מדווח, אבל רק התקרה קובעת אם התפריט מאושר."""
+
+    def test_target_is_reported(self):
+        tools = MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": 450, "target_budget": 400}))
+        result = tools.calculate_cost(VALID_MENU)
+        self.assertEqual(result["target_budget"], 400)
+        self.assertEqual(result["within_target"], result["total_cost"] <= 400)
+
+    def test_over_target_under_ceiling_is_approved(self):
+        cost = make_tools().calculate_cost(VALID_MENU)["total_cost"]
+        tools = MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": cost + 10, "target_budget": cost - 10}))
+        self.assertFalse(tools.calculate_cost(VALID_MENU)["within_target"])
+        self.assertTrue(tools.finalize_menu(VALID_MENU)["approved"])
+
+    def test_no_target_no_field(self):
+        self.assertNotIn("within_target", make_tools().calculate_cost(VALID_MENU))
+
+    def test_invalid_target(self):
+        for target in (0, -5, 500, "בערך", float("nan")):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                MenuRequest.from_dict({"num_guests": 5, "budget": 450, "target_budget": target})
+
+
 class TestLikes(unittest.TestCase):
     """'אוהב/ת' - העדפה רכה: מדווחת, אבל לעולם לא משנה אם התפריט תקין."""
 

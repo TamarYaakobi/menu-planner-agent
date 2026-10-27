@@ -88,7 +88,11 @@ def request_editor(scenario: dict) -> dict:
         guests_to_table(data["guests"]), num_rows="dynamic", width="stretch", key=f"g_{sid}",
         column_config={"תזונה": st.column_config.SelectboxColumn(options=["", *DIETS.values()])},
     )
-    return {"num_guests": int(num_guests), "budget": budget, "guests": table_to_guests(table)}
+    request = {"num_guests": int(num_guests), "budget": budget, "guests": table_to_guests(table)}
+    if data.get("target_budget") is not None:  # "בערך" - היעד נשמר, והתקציב בטופס הוא המקסימום
+        st.caption(f"התקציב בקירוב: יעד {data['target_budget']:g} ש\"ח, ומקסימום כפי שמופיע למעלה")
+        request["target_budget"] = min(data["target_budget"], budget)
+    return request
 
 
 # ---------- הרצה והצגה ----------

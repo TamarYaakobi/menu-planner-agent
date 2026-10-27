@@ -121,6 +121,25 @@ class TestStopConditions(unittest.TestCase):
         self.assertIn("נשארו לך רק 3 צעדים", client.requests[2][-1]["content"])
 
 
+class TestPreviousMenu(unittest.TestCase):
+
+    def test_previous_menu_is_offered_as_a_starting_point(self):
+        tools = MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": 1000}))
+        client = FakeClient(reply(call("finalize_menu", {"menu": VALID_MENU})))
+        agent = MenuAgent(client, "fake", tools, on_event=lambda *a: None,
+                          previous_menu={"menu": VALID_MENU, "total_cost": 123.4})
+        self.assertTrue(agent.run())
+        goal = client.requests[0][1]["content"]
+        self.assertIn("בתכנון קודם", goal)
+        self.assertIn("עוף בתנור עם תפוחי אדמה", goal)
+        self.assertIn("123", goal)
+
+    def test_no_previous_menu_no_hint(self):
+        agent, client, _ = make_agent(reply(call("finalize_menu", {"menu": VALID_MENU})))
+        agent.run()
+        self.assertNotIn("בתכנון קודם", client.requests[0][1]["content"])
+
+
 class TestGivingUp(unittest.TestCase):
     """ויתור נבדק בקוד, כמו הצלחה."""
 

@@ -6,44 +6,78 @@
 השיחה עוברת בין שלבים:
   goal    - מחכים לבקשה (או למידע שחסר בה)
   confirm - האג'נט הציג איך הבין, ומחכה ל"כן" או לתיקון
-  done    - יש תפריט. הודעה נוספת = תיקון לבקשה ("בלי סלמון"), ומתכננים מחדש
+  done    - יש תפריט. אפשר לבקש מתכונים, או לכתוב תיקון ("בלי סלמון") ולתכנן מחדש
+
+השיחות נשמרות בתיקייה conversations (לא עולה ל-Git), ואפשר לחזור לכל אחת מסרגל הצד.
 """
 import pandas as pd
 import streamlit as st
 from openai import APIError
 
 from agent import MenuAgent, short_args, summarize
+from chat_logic import (STATE_KEYS, delete_conversation, format_recipe, is_thanks, is_yes, list_conversations,
+                        load_conversation, new_conversation_id, requested_dishes, save_conversation, wants_recipes)
 from goal_parser import parse_goal, unknown_dislikes
 from llm import ConfigError, create_client, fallback_models
 from tools import ALLERGENS, DIETS, MenuRequest, MenuTools
 
-YES = {"כן", "כ", "יאללה", "בטח", "סבבה", "אוקיי", "ok", "yes", "y", "מאשר", "מאשרת", "מעולה", "נכון"}
 WELCOME = """היי! אני אג'נט שמתכנן תפריט לארוחה 🍽️
 
 ספרי לי מי מגיע, מה התקציב, ומה כל אחד אוכל או לא אוכל. למשל:
 
-> *אני מארחת 10 איש בשישי, יש לי 150 ש"ח. אחותי טבעונית, הבן שלה אלרגי לאגוזים, ואבא שלי לא אוהב פטריות.*
+> *אני מארחת 10 איש בשישי, יש לי בערך 150 ש"ח. אחותי טבעונית, הבן שלה אלרגי לאגוזים, ואבא שלי לא אוהב פטריות.*
 
-אני אגיד לך איך הבנתי, ואחרי שתאשרי - אתכנן תפריט שעומד בתקציב, עם רשימת קניות."""
+אני אגיד לך איך הבנתי, ואחרי שתאשרי - אתכנן תפריט שעומד בתקציב, עם רשימת קניות ומתכונים."""
 
 st.set_page_config(page_title="מתכנן תפריט", page_icon="🍽️")
 st.markdown("""<style>
-.stApp, [data-testid="stSidebar"], [data-testid="stChatInput"] textarea { direction: rtl; text-align: right; }
+.stApp, [data-testid="stSidebar"] { direction: rtl; }
+[data-testid="stChatMessage"], [data-testid="stChatMessageContent"], [data-testid="stMarkdownContainer"],
+[data-testid="stChatInput"] textarea, [data-testid="stExpander"], [data-testid="stCaptionContainer"],
+[data-testid="stAlert"], [data-testid="stSidebar"] button { direction: rtl; text-align: right; }
+[data-testid="stMarkdownContainer"] ul, [data-testid="stMarkdownContainer"] ol { padding-right: 1.2em; padding-left: 0; }
+[data-testid="stMarkdownContainer"] li, [data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] h3 { direction: rtl; text-align: right; }
+[data-testid="stMarkdownContainer"] blockquote { border-right: 3px solid #ccc; border-left: none;
+  padding-right: 1em; padding-left: 0; }
+code { direction: ltr; unicode-bidi: embed; }
 </style>""", unsafe_allow_html=True)
 
 
 # ---------- מצב השיחה ----------
 
 def reset():
+    st.session_state.conversation_id = new_conversation_id()
     st.session_state.messages = [{"role": "assistant", "content": WELCOME}]
     st.session_state.stage = "goal"
-    st.session_state.goal_text = ""   # כל מה שהמשתמשת כתבה על הבקשה, כולל תיקונים ותשובות
-    st.session_state.goal = None      # ההבנה האחרונה (ParsedGoal)
-    st.session_state.model = None     # המודל שעבד - אם היה מעבר לגיבוי, ממשיכים איתו
+    st.session_state.goal_text = ""      # הבקשה הראשונה, עם תשובות על מידע שחסר בה
+    st.session_state.goal = None         # ההבנה האחרונה (ParsedGoal)
+    st.session_state.model = None        # המודל שעבד - אם היה מעבר לגיבוי, ממשיכים איתו
+    st.session_state.menu = None         # התפריט האחרון שאושר, עם הבקשה שלו - בשביל מתכונים
+    st.session_state.previous_menu = None  # נקודת התחלה לתכנון הבא
+
+
+def load(conversation_id: str):
+    data = load_conversation(conversation_id)
+    if data is None:
+        st.toast("לא הצלחתי לפתוח את השיחה")
+        return
+    st.session_state.conversation_id = conversation_id
+    for key in STATE_KEYS:
+        setattr(st.session_state, key, data.get(key))
+
+
+def persist():
+    save_conversation(st.session_state.conversation_id, {k: st.session_state[k] for k in STATE_KEYS})
 
 
 if "messages" not in st.session_state:
     reset()
+    if st.query_params.get("c"):  # קישור ישיר לשיחה: ?c=<מזהה>
+        try:
+            load(st.query_params["c"])
+        except ValueError:  # מזהה לא תקין
+            pass
 
 
 def say(content: str, **extra):
@@ -72,7 +106,10 @@ def render_message(message: dict):
 
 def describe_goal(goal) -> str:
     request = MenuRequest.from_dict(goal.request)
-    lines = [f"**{request.num_guests} סועדים, תקציב {request.budget:g} ש\"ח**"]
+    budget = f"תקציב {request.budget:g} ש\"ח"
+    if request.target_budget is not None:
+        budget = f"תקציב בערך {request.target_budget:g} ש\"ח (עד {request.budget:g} אם אין ברירה)"
+    lines = [f"**{request.num_guests} סועדים, {budget}**"]
     for g in request.guests:
         parts = [f"אלרגיה ל{', '.join(ALLERGENS[a] for a in g.allergies)}" if g.allergies else "",
                  DIETS[g.diet] if g.diet else "",
@@ -92,26 +129,35 @@ def describe_goal(goal) -> str:
 
 
 def understand(text: str):
-    """מפענח את כל מה שנכתב עד עכשיו, ועונה: שאלה, הבנה לאישור, או הסבר למה לא."""
-    st.session_state.goal_text = (st.session_state.goal_text + "\n" + text).strip()
+    """
+    בקשה חדשה - מפענחים את כל מה שנכתב עליה (כולל תשובות לשאלות).
+    עדכון לבקשה קיימת - המודל מקבל את הבקשה המובנית + ההודעה הזו בלבד, והקוד מראה מה השתנה.
+    """
+    previous = st.session_state.goal if st.session_state.goal and st.session_state.goal.status == "ok" else None
+    if previous is None:
+        st.session_state.goal_text = (st.session_state.goal_text + "\n" + text).strip()
     try:
         client, default_model = create_client()
         with st.spinner("קוראת את הבקשה..."):
-            goal = parse_goal(client, st.session_state.model or default_model, st.session_state.goal_text,
-                              fallbacks=fallback_models())
+            goal = parse_goal(client, st.session_state.model or default_model,
+                              text if previous else st.session_state.goal_text,
+                              fallbacks=fallback_models(), previous=previous)
     except ConfigError as e:
         return say(f"❌ {e}")
     except APIError as e:
         return say(f"😕 המודל לא זמין כרגע ({type(e).__name__}). נסי לשלוח שוב בעוד דקה.")
-    st.session_state.model = goal.model
+    st.session_state.model = goal.model or st.session_state.model
 
     if goal.status == "needs_info":
         return say("כמעט! חסר לי עוד קצת מידע:\n\n" + "\n".join(f"- {q}" for q in goal.questions))
     if goal.status == "off_topic":
+        if previous:
+            return say("לא הבנתי מה לשנות 🙂 אפשר לכתוב למשל \"בלי סלמון\", \"התקציב 200\", או \"מתכונים\".")
         st.session_state.goal_text = ""
         return say("אני יודע רק לתכנן ארוחות 🙂 ספרי לי מי מגיע ומה התקציב.")
     if goal.status != "ok":
-        st.session_state.goal_text = ""
+        if not previous:
+            st.session_state.goal_text = ""
         return say(f"לא הצלחתי להבין את הבקשה ({goal.error}). אפשר לנסח אותה מחדש?")
 
     st.session_state.goal = goal
@@ -119,6 +165,10 @@ def understand(text: str):
     ask = "**להתחיל לתכנן?** אפשר לענות \"כן\", או לכתוב מה לתקן."
     if goal.unsupported or goal.warnings:
         ask = "**שימי לב לאזהרות למעלה.** אם הכל בסדר - \"כן\". אם לא - כתבי מה לתקן."
+    if previous:
+        changed = ("עדכנתי:\n" + "\n".join(f"- {c}" for c in goal.changes)) if goal.changes \
+            else "לא מצאתי מה לשנות בבקשה - אם התכוונת למשהו אחר, נסי לנסח אחרת."
+        return say(changed + "\n\nעכשיו הבקשה היא:\n\n" + describe_goal(goal) + "\n\n" + ask)
     say("הבנתי כך:\n\n" + describe_goal(goal) + "\n\n" + ask)
 
 
@@ -154,8 +204,8 @@ def plan():
 
         try:
             client, default_model = create_client()
-            agent = MenuAgent(client, st.session_state.model or default_model, tools,
-                              on_event=on_event, fallbacks=fallback_models())
+            agent = MenuAgent(client, st.session_state.model or default_model, tools, on_event=on_event,
+                              fallbacks=fallback_models(), previous_menu=st.session_state.previous_menu)
             success = agent.run()
         except APIError as e:
             status.update(label="המודל לא זמין", state="error", expanded=False)
@@ -165,16 +215,27 @@ def plan():
     # החלון החי מוצג רק עכשיו. בהיסטוריה, הצעדים נשמרים בתוך הודעת התשובה (בחלון מתקפל)
     st.session_state.stage = "done"
     if success:
-        say(menu_answer(tools.approved_menu, request.budget), events=lines, steps=agent.steps_used,
-            shopping_list=tools.approved_menu["shopping_list"])
+        approved = tools.approved_menu
+        st.session_state.menu = {"approved": approved, "request": st.session_state.goal.request}
+        st.session_state.previous_menu = {"menu": approved["menu"], "total_cost": approved["total_cost"]}
+        say(menu_answer(approved, request), events=lines, steps=agent.steps_used,
+            shopping_list=approved["shopping_list"])
     else:
-        say(failure_answer(agent, request.budget), events=lines, steps=agent.steps_used)
+        if agent.best_cost:  # בפעם הבאה (למשל אחרי שהתקציב עלה) - מתחילים מהתפריט הזול ביותר שנמצא
+            st.session_state.previous_menu = {"menu": agent.best_cost["menu"],
+                                              "total_cost": agent.best_cost["total_cost"]}
+        say(failure_answer(agent), events=lines, steps=agent.steps_used)
 
 
-def menu_answer(approved: dict, budget: float) -> str:
+def menu_answer(approved: dict, request) -> str:
     menu = approved["menu"]
-    lines = [f"✅ **הנה התפריט** - {approved['total_cost']:.0f} ש\"ח מתוך {budget:g} "
-             f"({approved['cost_per_guest']:.0f} ש\"ח לסועד)", "",
+    cost = approved["total_cost"]
+    if request.target_budget is not None:
+        budget = (f"ביעד של {request.target_budget:g}" if cost <= request.target_budget
+                  else f"מעל היעד של {request.target_budget:g}, אבל בתוך ה-{request.budget:g}")
+    else:
+        budget = f"מתוך {request.budget:g}"
+    lines = [f"✅ **הנה התפריט** - {cost:.0f} ש\"ח {budget} ({approved['cost_per_guest']:.0f} ש\"ח לסועד)", "",
              f"- 🍗 **עיקריות:** {menu['mains'][0]}, {menu['mains'][1]}",
              f"- 🥔 **תוספת:** {menu['side']}",
              f"- 🥗 **ירקות:** {menu['vegetable']}",
@@ -185,11 +246,12 @@ def menu_answer(approved: dict, budget: float) -> str:
         for like in likes:
             where = f"יש ב{', '.join(like['dishes'])}" if like["in_menu"] else "לא הצלחתי לשלב בתקציב ובאילוצים"
             lines.append(f"{'❤️' if like['in_menu'] else '🤍'} {like['guest']} אוהב/ת {like['likes']} - {where}")
-    lines += ["", "רוצה לשנות משהו? כתבי למשל \"בלי סלמון\" או \"התקציב הוא בעצם 200\"."]
+    lines += ["", "📖 **רוצה מתכונים?** כתבי \"מתכונים\", או למשל \"מתכון לקינוח\".",
+              "אפשר גם לשנות משהו - למשל \"בלי סלמון\" או \"התקציב הוא בעצם 200\"."]
     return "\n".join(lines)
 
 
-def failure_answer(agent, budget: float) -> str:
+def failure_answer(agent) -> str:
     lines = ["😕 **לא מצאתי תפריט שעומד בכל הדרישות.**", "", agent.failure_reason or ""]
     if agent.best_cost:
         cost = agent.best_cost["total_cost"]
@@ -198,14 +260,35 @@ def failure_answer(agent, budget: float) -> str:
     return "\n".join(lines)
 
 
+def show_recipes(text: str):
+    saved = st.session_state.menu
+    tools = MenuTools(MenuRequest.from_dict(saved["request"]))  # הכמויות - לפי הבקשה שהתפריט תוכנן לה
+    cards = [format_recipe(tools.recipe_card(dish)) for dish in requested_dishes(text, saved["approved"]["menu"])]
+    say("\n\n---\n\n".join(cards))
+
+
 # ---------- הדף ----------
 
 with st.sidebar:
     st.header("🍽️ מתכנן תפריט")
-    if st.button("🔄 שיחה חדשה", width="stretch"):
+    if st.button("➕ שיחה חדשה", width="stretch"):
         reset()
         st.rerun()
-    st.caption("האג'נט מבין בקשה בשפה חופשית, מבקש אישור, ומתכנן תפריט בתקציב שמתאים לכל האורחים.")
+    conversations = list_conversations()
+    if conversations:
+        st.caption("שיחות קודמות")
+    for conversation in conversations:
+        current = conversation["id"] == st.session_state.conversation_id
+        open_col, delete_col = st.columns([5, 1])
+        if open_col.button(conversation["title"], key=f"open_{conversation['id']}", width="stretch",
+                           type="primary" if current else "secondary", help=conversation["updated"].replace("T", " ")):
+            load(conversation["id"])
+            st.rerun()
+        if delete_col.button("🗑", key=f"delete_{conversation['id']}", help="מחיקת השיחה"):
+            delete_conversation(conversation["id"])
+            if current:
+                reset()
+            st.rerun()
 
 for message in st.session_state.messages:
     render_message(message)
@@ -215,8 +298,12 @@ if text := st.chat_input("כתבי כאן..."):
     render_message(st.session_state.messages[-1])
 
     stage = st.session_state.stage
-    if stage == "confirm" and (text.strip().lower() in YES or text.strip().startswith("כן")):
+    if stage == "confirm" and is_yes(text):
         plan()
+    elif st.session_state.menu and wants_recipes(text):
+        show_recipes(text)
+    elif stage == "done" and is_thanks(text):
+        say("בשמחה! 😊 בתיאבון. אם תרצי מתכונים או שינוי בתפריט - רק תכתבי.")
     else:
-        # בשלב האישור או אחרי תפריט - הודעה שאינה "כן" היא תיקון לבקשה
-        understand(text if stage == "goal" else f"תיקון: {text}")
+        understand(text)  # בקשה חדשה, תשובה לשאלה, או תיקון לבקשה קיימת
+    persist()

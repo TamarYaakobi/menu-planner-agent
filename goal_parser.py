@@ -20,6 +20,13 @@ from tools import ALLERGENS, DATA_DIR, DIETS, MenuRequest, load_json
 
 MAX_ATTEMPTS = 3
 MAX_TEXT_LENGTH = 2000
+# "בערך 400": מנסים להישאר ב-400, ומותר לעבור עד 450. סכום קבוע לבקשת המשתמשת - בתקציבים קטנים זה הרבה יחסית
+APPROX_MARGIN = 50
+# "בערך 400", "בסביבות 400", "כ-400", "~400", "around 400". "עד 400" הוא תקרה, לא "בערך"
+_APPROX_WORD = r"(בערך|בסביבות|סביב|כ-|כ־|~|around|about|approximately|roughly)"
+# רק על סכום כסף: "כ-10 אנשים" לא אומר שהתקציב גמיש
+APPROX_PATTERN = (_APPROX_WORD + r"\s*\d+(?:[.,]\d+)*\s*(ש\"ח|ש״ח|שקל\w*|₪|ILS|NIS|shekels?)"
+                  + r"|תקציב\w*\s+(של\s+)?" + _APPROX_WORD + r"\s*\d")
 
 QUESTIONS = {
     "num_guests": "כמה סועדים יהיו בארוחה (כולל אותך, אם את/ה אוכל/ת)?",
@@ -42,11 +49,13 @@ PARSER_PROMPT = f"""אתה מפענח בקשות לתכנון ארוחה. קרא
   הסק ורשום את ההנחה ב-assumptions. אם אין שום מידע - null (אל תנחש).
 - תקציב: ברירת המחדל היא תקציב כולל - budget_total ("300 שקל", "150₪", "תקציב 200").
   budget_per_guest רק אם כתוב במפורש שהסכום הוא לאדם ("40 ש"ח לאדם", "לסועד", "per person") - ואל תכפיל בעצמך.
-  אם אין תקציב - שניהם null (אל תנחש). "עד 300", "בערך 300" = 300.
+  אם אין תקציב - שניהם null (אל תנחש). "עד 300" = 300 (תקרה).
+- budget_approximate: true אם התקציב נאמר בקירוב ("בערך 400", "בסביבות 400", "כ-400"). "עד 400" זה לא בקירוב.
 - guests: רק אנשים עם הגבלה או העדפה. name: השם שנאמר, או תיאור קצר ("אחות", "הבן של רונית").
   כמה אנשים עם אותה הגבלה בלי שמות ("חצי מהם צמחונים") - אפשר רשומה אחת.
 - allergies: רק מהרשימה: gluten (גלוטן, צליאק), eggs (ביצים), dairy (חלב, לקטוז), nuts (אגוזים, שקדים, אגוזי מלך),
-  fish (דגים). "לא אוכל גלוטן" / "רגיש ללקטוז" נחשבים אלרגיה - בספק, עדיף להחמיר.
+  fish (דגים), peanuts (בוטנים - לא nuts!), sesame (שומשום, טחינה), soy (סויה).
+  "לא אוכל גלוטן" / "רגיש ללקטוז" / "רגישות לסויה" נחשבים אלרגיה - בספק, עדיף להחמיר.
 - diet: vegetarian (צמחוני, "לא אוכל בשר") או vegan (טבעוני). אוכל דגים אבל לא בשר - vegetarian (מחמיר יותר),
   ורשום ב-assumptions שגם דגים לא יוגשו לו.
 - dislikes: מרכיבים שהאדם לא אוהב או "לא סובל" - לא אלרגיה. כתוב אותם בשם מהרשימה הזו כשאפשר
@@ -55,8 +64,8 @@ PARSER_PROMPT = f"""אתה מפענח בקשות לתכנון ארוחה. קרא
 - likes: מנות או מרכיבים שהאדם אוהב ("אוהבת חסה", "מת על שקשוקה") - העדפה רכה. כתוב בשם מהרשימות כשאפשר.
   "אוהב X" זה תמיד likes, ולעולם לא dislikes. אורח שרק אוהב משהו - גם הוא ב-guests.
   מנות שיש במאגר: {", ".join(_known_dishes())}
-- unsupported: הגבלה רפואית, דתית או תזונתית שאינה ברשימות למעלה - בוטנים, שומשום, סויה, כשרות, סוכרת,
-  פירות ים וכו'. אסור למפות אותה למשהו אחר. בוטנים הם לא nuts. "לא אוהב X" זה תמיד dislikes, לא unsupported.
+- unsupported: הגבלה רפואית, דתית או תזונתית שאינה ברשימות למעלה - כשרות, סוכרת, פירות ים, חזיר וכו'.
+  אסור למפות אותה למשהו אחר. "לא אוהב X" זה תמיד dislikes, לא unsupported.
 - כל הגבלה חייבת להופיע אצל אורח: מי שצמחוני מקבל diet, מי שאלרגי מקבל allergies. לא מספיק לכתוב את זה ב-assumptions.
 - assumptions: כל הנחה שעשית, בעברית.
 - off_topic: true אם הטקסט בכלל לא בקשה לתכנון ארוחה.
@@ -70,6 +79,7 @@ SUBMIT_TOOL = {"type": "function", "function": {
         "num_guests": {"type": ["integer", "null"]},
         "budget_total": {"type": ["number", "null"]},
         "budget_per_guest": {"type": ["number", "null"]},
+        "budget_approximate": {"type": "boolean"},
         "guests": {"type": "array", "items": {"type": "object", "properties": {
             "name": {"type": "string"},
             "allergies": {"type": "array", "items": {"type": "string", "enum": list(ALLERGENS)}},
@@ -94,12 +104,19 @@ ALLERGEN_PATTERNS = {
     "dairy": r"(לקטוז|מוצרי חלב|חלב(?!\s*קוקוס)|חלבי\w*)",
     "nuts": r"(אגוז\w*|שקד\w*)",
     "fish": r"(דגים|דג|סלמון)",
+    "peanuts": r"(בוטנ\w*)",
+    "sesame": r"(שומשום|טחינה)",
+    "soy": r"(סויה)",
 }
 DIET_PATTERNS = {
     "vegan": r"(טבעונ\w*)",
     "vegetarian": r"(צמחונ\w*|לא\s+אוכל\w*\s+בשר)",
 }
-UNSUPPORTED_PATTERNS = [r"בוטנ\w*", r"שומשום", r"סויה", r"כשר\w*", r"סוכרת\w*", r"פירות\s+ים", r"חזיר"]
+UNSUPPORTED_PATTERNS = [r"כשר\w*", r"סוכרת\w*", r"פירות\s+ים", r"חזיר"]
+
+
+def is_approximate(text: str) -> bool:
+    return re.search(APPROX_PATTERN, text, re.IGNORECASE) is not None
 
 
 def mentioned(text: str, pattern: str) -> bool:
@@ -220,9 +237,10 @@ class ParsedGoal:
     error: str | None = None
     attempts: int = 0
     model: str | None = None                             # המודל שבפועל ענה
+    changes: list[str] = field(default_factory=list)     # בעדכון: מה השתנה לעומת הבקשה הקודמת
 
 
-def build_request(parsed: dict) -> tuple[dict | None, list[str]]:
+def build_request(parsed: dict, approximate: bool = False) -> tuple[dict | None, list[str]]:
     """
     מה-JSON של המודל לבקשה. מחזיר (בקשה, שדות חסרים).
     הקוד - לא המודל - מחליט מה חסר, ומכפיל תקציב לאדם במספר הסועדים.
@@ -256,12 +274,20 @@ def build_request(parsed: dict) -> tuple[dict | None, list[str]]:
                "diet": g.get("diet"), "dislikes": g.get("dislikes") or [],
                "likes": g.get("likes") or []} if isinstance(g, dict) else g
               for g in parsed.get("guests") or []]
-    return {"num_guests": num_guests, "budget": budget, "guests": guests}, []
+    request = {"num_guests": num_guests, "budget": budget, "guests": guests}
+    if approximate and isinstance(budget, (int, float)) and budget > 0:
+        request["target_budget"], request["budget"] = budget, round(budget + APPROX_MARGIN, 2)
+    return request, []
 
 
 def parse_goal(client, model: str, text: str, on_wait=None,
-               fallbacks: list[str] | None = None, on_fallback=None) -> ParsedGoal:
-    """result.model הוא המודל שבפועל ענה - אם היה מעבר לגיבוי, כדאי להמשיך איתו."""
+               fallbacks: list[str] | None = None, on_fallback=None,
+               previous: ParsedGoal | None = None) -> ParsedGoal:
+    """
+    result.model הוא המודל שבפועל ענה - אם היה מעבר לגיבוי, כדאי להמשיך איתו.
+    previous: הבקשה שכבר הובנה. אז text הוא רק העדכון ("בעצם התקציב 200"), והמודל מקבל את הבקשה
+    המובנית + העדכון - במקום לפענח מחדש את כל השיחה (בשיחות ארוכות הוא התחיל לערבב מי רגיש למה).
+    """
     text = (text or "").strip()
     if not text:
         return ParsedGoal("error", error="הבקשה ריקה")
@@ -275,13 +301,18 @@ def parse_goal(client, model: str, text: str, on_wait=None,
         if on_fallback:
             on_fallback(old, new, error)
 
-    result = _parse_loop(client, current, text, on_wait, fallbacks, switch)
+    result = _parse_loop(client, current, text, on_wait, fallbacks, switch, previous)
     result.model = current["model"]
     return result
 
 
-def _parse_loop(client, current: dict, text: str, on_wait, fallbacks, switch) -> ParsedGoal:
-    messages = [{"role": "system", "content": PARSER_PROMPT}, {"role": "user", "content": text}]
+def _parse_loop(client, current: dict, text: str, on_wait, fallbacks, switch, previous) -> ParsedGoal:
+    if previous is None:
+        messages = [{"role": "system", "content": PARSER_PROMPT}, {"role": "user", "content": text}]
+    else:
+        known = json.dumps(_as_parser_input(previous), ensure_ascii=False, indent=1)
+        messages = [{"role": "system", "content": PARSER_PROMPT + UPDATE_PROMPT},
+                    {"role": "user", "content": f"הבקשה הנוכחית:\n{known}\n\nההודעה החדשה:\n{text}"}]
     problems: list[str] = []
     for attempt in range(1, MAX_ATTEMPTS + 1):
         message = ask_model(client, current["model"], messages, [SUBMIT_TOOL], on_wait=on_wait,
@@ -304,7 +335,7 @@ def _parse_loop(client, current: dict, text: str, on_wait, fallbacks, switch) ->
             messages.append({"role": "tool", "tool_call_id": call.id, "content": problems[0]})
             continue
 
-        result = _evaluate(text, parsed, attempt)
+        result = _evaluate(text, parsed, attempt, previous)
         problems = result.warnings
         if result.status != "ok" or not problems or attempt == MAX_ATTEMPTS:
             return result
@@ -314,7 +345,7 @@ def _parse_loop(client, current: dict, text: str, on_wait, fallbacks, switch) ->
     return ParsedGoal("error", error="לא הצלחתי לפענח את הבקשה: " + "; ".join(problems), attempts=MAX_ATTEMPTS)
 
 
-def _evaluate(text: str, parsed: dict, attempt: int) -> ParsedGoal:
+def _evaluate(text: str, parsed: dict, attempt: int, previous: ParsedGoal | None = None) -> ParsedGoal:
     """בודק פענוח אחד. warnings לא ריק = יש מה לתקן (ובניסיון האחרון - להציג למשתמש)."""
     common = {"assumptions": list(parsed.get("assumptions") or []),
               "unsupported": list(parsed.get("unsupported") or []) + detect_unsupported(text, parsed),
@@ -322,18 +353,99 @@ def _evaluate(text: str, parsed: dict, attempt: int) -> ParsedGoal:
     if parsed.get("off_topic"):
         return ParsedGoal("off_topic", error="הבקשה לא נראית כמו תכנון ארוחה", **common)
 
-    request, missing = build_request(parsed)
+    # הקוד מחליט אם התקציב בקירוב: המודל יכול רק להוסיף את זה, לא לבטל מה שכתוב בטקסט
+    approximate = bool(parsed.get("budget_approximate")) or is_approximate(text)
+    request, missing = build_request(parsed, approximate)
     if missing:
         return ParsedGoal("needs_info", questions=[QUESTIONS[m] for m in missing], **common)
+    if "target_budget" in request:
+        common["assumptions"].append(f"התקציב בקירוב: אנסה להישאר ב-{request['target_budget']:g} ש\"ח, ואם אין ברירה - עד {request['budget']:g}")
 
     problems = cross_check(text, parsed)
+    if previous is not None:
+        problems += removed_constraints(previous.request, request, text)
     try:
         MenuRequest.from_dict(request)
     except ValueError as e:
         problems.insert(0, f"הבקשה לא תקינה: {e}")
         if attempt == MAX_ATTEMPTS:
             return ParsedGoal("error", error=str(e), **common)
-    return ParsedGoal("ok", request=request, warnings=problems, **common)
+    changes = describe_changes(previous.request, request) if previous is not None else []
+    return ParsedGoal("ok", request=request, warnings=problems, changes=changes, **common)
+
+
+UPDATE_PROMPT = """
+יש כבר בקשה מפוענחת (למטה), והמשתמש שולח עדכון. החזר דרך submit_request את הבקשה המלאה אחרי העדכון:
+שנה רק את מה שההודעה החדשה מבקשת, ושמור את כל השאר בדיוק כמו שהוא - אותם שמות אורחים, אותן אלרגיות,
+תזונה והעדפות. אל תוסיף ואל תסיר אורחים או הגבלות שההודעה לא מזכירה.
+"""
+
+
+def _as_parser_input(goal: ParsedGoal) -> dict:
+    """הבקשה הקיימת, באותו מבנה שהמודל ממלא ב-submit_request."""
+    request = goal.request
+    target = request.get("target_budget")
+    return {"num_guests": request["num_guests"],
+            "budget_total": target if target is not None else request["budget"],
+            "budget_approximate": target is not None,
+            "guests": request["guests"], "unsupported": goal.unsupported}
+
+
+def removed_constraints(old: dict, new: dict, text: str) -> list[str]:
+    """
+    אלרגיה או תזונה שהיו בבקשה הקודמת ונעלמו, בלי שההודעה החדשה מזכירה אותן או את האורח.
+    ("דני לא מגיע" או "דני בעצם לא אלרגי לחלב" - מותר. "התקציב 200" שגרם לאלרגיה להיעלם - לא.)
+    """
+    problems = []
+    for allergen, pattern in ALLERGEN_PATTERNS.items():
+        had = [g["name"] for g in old["guests"] if allergen in g.get("allergies", [])]
+        has = sum(allergen in g.get("allergies", []) for g in new["guests"])
+        if has < len(had) and not mentioned(text, pattern) and not any(n in text for n in had):
+            problems.append(f"האלרגיה ל{ALLERGENS[allergen]} ({', '.join(had)}) נעלמה, וההודעה החדשה לא ביקשה "
+                            f"להסיר אותה. החזר אותה.")
+    for diet, pattern in DIET_PATTERNS.items():
+        stricter = {"vegetarian": {"vegetarian", "vegan"}, "vegan": {"vegan"}}[diet]
+        had = [g["name"] for g in old["guests"] if g.get("diet") == diet]
+        has = sum(g.get("diet") in stricter for g in new["guests"])
+        if has < len(had) and not mentioned(text, pattern) and not any(n in text for n in had):
+            problems.append(f"התזונה ה{DIETS[diet]} ({', '.join(had)}) נעלמה, וההודעה החדשה לא ביקשה להסיר אותה. "
+                            f"החזר אותה.")
+    return problems
+
+
+def describe_changes(old: dict, new: dict) -> list[str]:
+    """מה השתנה בין שתי בקשות, בעברית - כדי שהמשתמש יראה בדיוק מה העדכון עשה."""
+    changes = []
+    if old["num_guests"] != new["num_guests"]:
+        changes.append(f"סועדים: מ-{old['num_guests']} ל-{new['num_guests']}")
+    if _budget_text(old) != _budget_text(new):
+        changes.append(f"תקציב: מ-{_budget_text(old)} ל-{_budget_text(new)}")
+    old_guests = {g["name"]: g for g in old["guests"]}
+    new_guests = {g["name"]: g for g in new["guests"]}
+    for name in new_guests.keys() - old_guests.keys():
+        changes.append(f"נוסף/ה: {name} ({_guest_text(new_guests[name])})")
+    for name in old_guests.keys() - new_guests.keys():
+        changes.append(f"הוסר/ה: {name}")
+    for name in old_guests.keys() & new_guests.keys():
+        before, after = _guest_text(old_guests[name]), _guest_text(new_guests[name])
+        if before != after:
+            changes.append(f"{name}: מ\"{before}\" ל\"{after}\"")
+    return changes
+
+
+def _budget_text(request: dict) -> str:
+    if request.get("target_budget") is not None:
+        return f"בערך {request['target_budget']:g} (עד {request['budget']:g})"
+    return f"{request['budget']:g}"
+
+
+def _guest_text(guest: dict) -> str:
+    allergies = ", ".join(ALLERGENS.get(a, a) for a in guest.get("allergies") or [])
+    parts = [f"אלרגיה ל{allergies}" if allergies else "",
+             DIETS.get(guest.get("diet"), "") if guest.get("diet") else "",
+             f"לא אוהב/ת {', '.join(guest.get('dislikes') or [])}" if guest.get("dislikes") else "",
+             f"אוהב/ת {', '.join(guest.get('likes') or [])}" if guest.get("likes") else ""]
+    return "; ".join(p for p in parts if p) or "בלי הגבלות"
 
 
 def unknown_dislikes(request: dict) -> list[str]:

@@ -21,7 +21,8 @@ from pathlib import Path
 DATA_DIR = Path(__file__).parent / "data"
 
 CATEGORIES = {"main": "עיקרית", "side": "תוספת", "vegetable": "ירקות", "dessert": "קינוח"}
-ALLERGENS = {"gluten": "גלוטן", "eggs": "ביצים", "dairy": "חלב", "nuts": "אגוזים", "fish": "דגים"}
+ALLERGENS = {"gluten": "גלוטן", "eggs": "ביצים", "dairy": "חלב", "nuts": "אגוזים", "fish": "דגים",
+             "peanuts": "בוטנים", "sesame": "שומשום", "soy": "סויה"}
 DIETS = {"vegetarian": "צמחונית", "vegan": "טבעונית"}
 UNITS = {"g": "גרם", "ml": "מ\"ל", "unit": "יח'"}
 
@@ -86,8 +87,9 @@ class Guest:
 @dataclass
 class MenuRequest:
     num_guests: int
-    budget: float
+    budget: float                                      # תקרה קשיחה - finalize_menu לא יאשר מעליה
     guests: list[Guest] = field(default_factory=list)  # רק אורחים עם אילוצים או העדפות
+    target_budget: float | None = None                 # "בערך 400": היעד. מותר לעבור אותו עד budget
 
     @classmethod
     def from_dict(cls, data: dict) -> MenuRequest:
@@ -126,7 +128,14 @@ class MenuRequest:
 
         if len(guests) > num_guests:
             raise ValueError(f"ברשימה יש {len(guests)} אורחים, יותר ממספר האורחים ({num_guests})")
-        return cls(num_guests, float(budget), guests)
+
+        target = data.get("target_budget")
+        if target is not None:
+            if (not isinstance(target, (int, float)) or isinstance(target, bool)
+                    or not math.isfinite(target) or not 0 < target <= budget):
+                raise ValueError("יעד התקציב חייב להיות מספר חיובי, ולא גבוה מהתקציב המקסימלי")
+            target = float(target)
+        return cls(num_guests, float(budget), guests, target)
 
 
 # ---------- הכלים ----------
@@ -227,6 +236,9 @@ class MenuTools:
             "dishes": sorted(breakdown, key=lambda d: d["cost"], reverse=True),
             "complete": not missing,
         }
+        if self.request.target_budget is not None:
+            result["target_budget"] = self.request.target_budget
+            result["within_target"] = total <= self.request.target_budget
         if missing:
             result["missing_prices"] = missing
             result["warning"] = ("לחלק מהמרכיבים אין מחיר בקטלוג, ולכן העלות חלקית. "
@@ -360,6 +372,25 @@ class MenuTools:
             result["note"] = ("אין החלפה של מנה אחת או של שתי מנות שמוזילה את התפריט ושומרת על כל "
                               "האורחים. כנראה שזה התפריט הזול ביותר שאפשר להגיע אליו מכאן.")
         return result
+
+    # ---------- מתכונים (למשתמש - לא כלי של המודל) ----------
+
+    def recipe_card(self, dish: str) -> dict:
+        """מתכון מוכן לבישול. הכמויות מחושבות בקוד לפי מספר הסועדים, ולא נוחשות."""
+        recipe = self.recipes.get(dish)
+        if recipe is None:
+            return {"error": f"אין מתכון בשם '{dish}'"}
+        servings = self._servings(recipe)
+        return {
+            "name": dish,
+            "category": recipe["category"],
+            "time_minutes": recipe.get("time_minutes"),
+            "num_guests": self.request.num_guests,
+            "main_portion": recipe["category"] == "main",  # 60% מנה לסועד - יש שתי עיקריות
+            "ingredients": [{"name": ing["name"], "amount": ing["amount"] * servings, "unit": ing["unit"]}
+                            for ing in recipe["ingredients"]],
+            "steps": recipe.get("steps", []),
+        }
 
     # ---------- פונקציות עזר פנימיות (לא חשופות למודל) ----------
 
