@@ -1,0 +1,8 @@
+{
+  "num_guests": 10,
+  "budget": 90,
+  "guests": [
+    {"name": "יוסי", "diet": "vegan"},
+    {"name": "אבי", "allergies": ["gluten"]}
+  ]
+}

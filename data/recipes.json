@@ -1,0 +1,307 @@
+[
+  {
+    "name": "עוף בתנור עם תפוחי אדמה",
+    "category": "main",
+    "allergens": [],
+    "diet": [],
+    "ingredients": [
+      {"name": "שוקי עוף", "amount": 300, "unit": "g"},
+      {"name": "תפוחי אדמה", "amount": 200, "unit": "g"},
+      {"name": "בצל", "amount": 50, "unit": "g"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"},
+      {"name": "פפריקה", "amount": 2, "unit": "g"},
+      {"name": "שום", "amount": 5, "unit": "g"}
+    ]
+  },
+  {
+    "name": "שניצל עוף",
+    "category": "main",
+    "allergens": ["gluten", "eggs"],
+    "diet": [],
+    "ingredients": [
+      {"name": "חזה עוף", "amount": 180, "unit": "g"},
+      {"name": "פירורי לחם", "amount": 40, "unit": "g"},
+      {"name": "ביצים", "amount": 0.5, "unit": "unit"},
+      {"name": "קמח", "amount": 15, "unit": "g"},
+      {"name": "שמן קנולה", "amount": 40, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "סלמון בתנור עם לימון ושמיר",
+    "category": "main",
+    "allergens": ["fish"],
+    "diet": [],
+    "ingredients": [
+      {"name": "פילה סלמון", "amount": 200, "unit": "g"},
+      {"name": "לימון", "amount": 0.25, "unit": "unit"},
+      {"name": "שמיר", "amount": 5, "unit": "g"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"},
+      {"name": "שום", "amount": 5, "unit": "g"}
+    ]
+  },
+  {
+    "name": "קציצות בקר ברוטב עגבניות",
+    "category": "main",
+    "allergens": ["gluten", "eggs"],
+    "diet": [],
+    "ingredients": [
+      {"name": "בשר בקר טחון", "amount": 180, "unit": "g"},
+      {"name": "עגבניות", "amount": 150, "unit": "g"},
+      {"name": "בצל", "amount": 50, "unit": "g"},
+      {"name": "ביצים", "amount": 0.25, "unit": "unit"},
+      {"name": "פירורי לחם", "amount": 15, "unit": "g"},
+      {"name": "שום", "amount": 5, "unit": "g"}
+    ]
+  },
+  {
+    "name": "פסטה ברוטב שמנת ופטריות",
+    "category": "main",
+    "allergens": ["gluten", "dairy"],
+    "diet": ["vegetarian"],
+    "ingredients": [
+      {"name": "פסטה", "amount": 120, "unit": "g"},
+      {"name": "פטריות שמפיניון", "amount": 100, "unit": "g"},
+      {"name": "שמנת לבישול", "amount": 80, "unit": "ml"},
+      {"name": "בצל", "amount": 40, "unit": "g"},
+      {"name": "פרמזן", "amount": 15, "unit": "g"},
+      {"name": "שום", "amount": 5, "unit": "g"}
+    ]
+  },
+  {
+    "name": "שקשוקה",
+    "category": "main",
+    "allergens": ["eggs"],
+    "diet": ["vegetarian"],
+    "ingredients": [
+      {"name": "עגבניות", "amount": 250, "unit": "g"},
+      {"name": "ביצים", "amount": 2, "unit": "unit"},
+      {"name": "פלפל אדום", "amount": 80, "unit": "g"},
+      {"name": "בצל", "amount": 50, "unit": "g"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"},
+      {"name": "פפריקה", "amount": 2, "unit": "g"},
+      {"name": "שום", "amount": 5, "unit": "g"}
+    ]
+  },
+  {
+    "name": "קארי עדשים בחלב קוקוס",
+    "category": "main",
+    "allergens": [],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "עדשים כתומות", "amount": 80, "unit": "g"},
+      {"name": "חלב קוקוס", "amount": 100, "unit": "ml"},
+      {"name": "עגבניות", "amount": 100, "unit": "g"},
+      {"name": "בצל", "amount": 50, "unit": "g"},
+      {"name": "אבקת קארי", "amount": 3, "unit": "g"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "ריזוטו כמהין",
+    "category": "main",
+    "allergens": ["dairy"],
+    "diet": ["vegetarian"],
+    "ingredients": [
+      {"name": "אורז", "amount": 100, "unit": "g"},
+      {"name": "כמהין", "amount": 10, "unit": "g"},
+      {"name": "חמאה", "amount": 20, "unit": "g"},
+      {"name": "פרמזן", "amount": 20, "unit": "g"},
+      {"name": "בצל", "amount": 40, "unit": "g"}
+    ]
+  },
+
+  {
+    "name": "אורז עם שקדים קלויים",
+    "category": "side",
+    "allergens": ["nuts"],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "אורז", "amount": 80, "unit": "g"},
+      {"name": "שקדים", "amount": 15, "unit": "g"},
+      {"name": "שמן זית", "amount": 5, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "תפוחי אדמה אפויים ברוזמרין",
+    "category": "side",
+    "allergens": [],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "תפוחי אדמה", "amount": 250, "unit": "g"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"},
+      {"name": "רוזמרין", "amount": 2, "unit": "g"}
+    ]
+  },
+  {
+    "name": "פתיתים ברוטב עגבניות",
+    "category": "side",
+    "allergens": ["gluten"],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "פתיתים", "amount": 80, "unit": "g"},
+      {"name": "רסק עגבניות", "amount": 20, "unit": "g"},
+      {"name": "בצל", "amount": 30, "unit": "g"},
+      {"name": "שמן קנולה", "amount": 5, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "מג'דרה",
+    "category": "side",
+    "allergens": [],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "אורז", "amount": 50, "unit": "g"},
+      {"name": "עדשים ירוקות", "amount": 40, "unit": "g"},
+      {"name": "בצל", "amount": 80, "unit": "g"},
+      {"name": "שמן קנולה", "amount": 15, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "פירה תפוחי אדמה",
+    "category": "side",
+    "allergens": ["dairy"],
+    "diet": ["vegetarian"],
+    "ingredients": [
+      {"name": "תפוחי אדמה", "amount": 200, "unit": "g"},
+      {"name": "חמאה", "amount": 15, "unit": "g"},
+      {"name": "חלב", "amount": 50, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "קוסקוס עם ירקות",
+    "category": "side",
+    "allergens": ["gluten"],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "קוסקוס", "amount": 80, "unit": "g"},
+      {"name": "קישואים", "amount": 60, "unit": "g"},
+      {"name": "בצל", "amount": 30, "unit": "g"},
+      {"name": "שמן זית", "amount": 5, "unit": "ml"}
+    ]
+  },
+
+  {
+    "name": "סלט ירקות קצוץ",
+    "category": "vegetable",
+    "allergens": [],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "עגבניות", "amount": 100, "unit": "g"},
+      {"name": "מלפפונים", "amount": 100, "unit": "g"},
+      {"name": "בצל", "amount": 20, "unit": "g"},
+      {"name": "פטרוזיליה", "amount": 5, "unit": "g"},
+      {"name": "לימון", "amount": 0.25, "unit": "unit"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "סלט חסה עם אגוזי מלך",
+    "category": "vegetable",
+    "allergens": ["nuts"],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "חסה", "amount": 0.2, "unit": "unit"},
+      {"name": "אגוזי מלך", "amount": 15, "unit": "g"},
+      {"name": "תפוחים", "amount": 40, "unit": "g"},
+      {"name": "לימון", "amount": 0.1, "unit": "unit"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "ירקות קלויים בתנור",
+    "category": "vegetable",
+    "allergens": [],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "קישואים", "amount": 100, "unit": "g"},
+      {"name": "פלפל אדום", "amount": 80, "unit": "g"},
+      {"name": "בטטה", "amount": 100, "unit": "g"},
+      {"name": "בצל", "amount": 40, "unit": "g"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "סלט יווני",
+    "category": "vegetable",
+    "allergens": ["dairy"],
+    "diet": ["vegetarian"],
+    "ingredients": [
+      {"name": "עגבניות", "amount": 80, "unit": "g"},
+      {"name": "מלפפונים", "amount": 80, "unit": "g"},
+      {"name": "פלפל אדום", "amount": 40, "unit": "g"},
+      {"name": "גבינה בולגרית", "amount": 40, "unit": "g"},
+      {"name": "זיתים", "amount": 20, "unit": "g"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "פטריות מוקפצות עם שום",
+    "category": "vegetable",
+    "allergens": [],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "פטריות שמפיניון", "amount": 150, "unit": "g"},
+      {"name": "שום", "amount": 5, "unit": "g"},
+      {"name": "שמן זית", "amount": 10, "unit": "ml"},
+      {"name": "פטרוזיליה", "amount": 5, "unit": "g"}
+    ]
+  },
+
+  {
+    "name": "עוגת שוקולד",
+    "category": "dessert",
+    "allergens": ["gluten", "eggs", "dairy"],
+    "diet": ["vegetarian"],
+    "ingredients": [
+      {"name": "קמח", "amount": 30, "unit": "g"},
+      {"name": "שוקולד מריר", "amount": 30, "unit": "g"},
+      {"name": "ביצים", "amount": 0.5, "unit": "unit"},
+      {"name": "סוכר", "amount": 25, "unit": "g"},
+      {"name": "חמאה", "amount": 20, "unit": "g"}
+    ]
+  },
+  {
+    "name": "סלט פירות",
+    "category": "dessert",
+    "allergens": [],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "תפוחים", "amount": 80, "unit": "g"},
+      {"name": "בננות", "amount": 80, "unit": "g"},
+      {"name": "תפוזים", "amount": 100, "unit": "g"}
+    ]
+  },
+  {
+    "name": "עוגת אגוזים",
+    "category": "dessert",
+    "allergens": ["nuts", "gluten", "eggs"],
+    "diet": ["vegetarian"],
+    "ingredients": [
+      {"name": "אגוזי מלך", "amount": 30, "unit": "g"},
+      {"name": "קמח", "amount": 25, "unit": "g"},
+      {"name": "ביצים", "amount": 0.5, "unit": "unit"},
+      {"name": "סוכר", "amount": 25, "unit": "g"},
+      {"name": "שמן קנולה", "amount": 15, "unit": "ml"}
+    ]
+  },
+  {
+    "name": "מוס שוקולד",
+    "category": "dessert",
+    "allergens": ["eggs"],
+    "diet": ["vegetarian"],
+    "ingredients": [
+      {"name": "שוקולד מריר", "amount": 40, "unit": "g"},
+      {"name": "ביצים", "amount": 1, "unit": "unit"},
+      {"name": "סוכר", "amount": 10, "unit": "g"}
+    ]
+  },
+  {
+    "name": "אבטיח קר",
+    "category": "dessert",
+    "allergens": [],
+    "diet": ["vegetarian", "vegan"],
+    "ingredients": [
+      {"name": "אבטיח", "amount": 350, "unit": "g"}
+    ]
+  }
+]

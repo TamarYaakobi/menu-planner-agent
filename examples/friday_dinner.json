@@ -1,0 +1,10 @@
+{
+  "num_guests": 10,
+  "budget": 160,
+  "guests": [
+    {"name": "דנה", "allergies": ["nuts"]},
+    {"name": "יוסי", "diet": "vegetarian"},
+    {"name": "מירב", "dislikes": ["פטריות", "עגבניות"]},
+    {"name": "אבי", "allergies": ["gluten"]}
+  ]
+}
