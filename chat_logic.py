@@ -131,7 +131,7 @@ def cost_answer(saved_menu: dict) -> str:
     tools = MenuTools(MenuRequest.from_dict(saved_menu["request"]))
     cost = tools.calculate_cost(saved_menu["approved"]["menu"])
     guests = tools.request.num_guests
-    lines = [f"💰 **{cost['cost_per_guest']:.2f} ש\"ח לסועד** ({cost['total_cost']:.2f} ש\"ח ל-{guests} סועדים)", ""]
+    lines = [f"💰 **{cost['cost_per_guest']:.2f} ש\"ח לסועד** ({cost['total_cost']:.2f} ש\"ח {diners(guests, 'ל')})", ""]
     lines += [f"- {d['name']}: {d['cost'] / guests:.2f} ש\"ח" for d in cost["dishes"]]
     packages = sum(item["packages_cost"] for item in saved_menu["approved"]["shopping_list"])
     lines += ["", f"*זו עלות המצרכים שנכנסים לארוחה. בקופה, באריזות שלמות, זה יוצא בערך {packages:.0f} ש\"ח - "
@@ -249,6 +249,13 @@ def format_amount(amount: float, unit: str) -> str:
     return f"{_nice(math.ceil(amount * 2) / 2)} יח'"  # יחידות - בחצאים, כלפי מעלה
 
 
+def diners(n: int, prefix: str = "") -> str:
+    """"8 סועדים" / "סועד אחד", ועם אות יחס: "ל-8 סועדים" / "לסועד אחד" (ולא "1 סועדים")."""
+    if n == 1:
+        return prefix + "סועד אחד"
+    return f"{prefix}-{n} סועדים" if prefix else f"{n} סועדים"
+
+
 def _nice(x: float) -> str:
     return f"{x:.1f}".rstrip("0").rstrip(".")
 
@@ -256,7 +263,7 @@ def _nice(x: float) -> str:
 def format_recipe(card: dict) -> str:
     portion = " (60% מנה לסועד, כי יש שתי עיקריות)" if card["main_portion"] else ""
     lines = [f"### 🍳 {card['name']}",
-             f"⏱️ {card['time_minutes']} דקות · ל-{card['num_guests']} סועדים{portion}", "",
+             f"⏱️ {card['time_minutes']} דקות · {diners(card['num_guests'], 'ל')}{portion}", "",
              "**מצרכים:**"]
     lines += [f"- {format_amount(i['amount'], i['unit'])} {i['name']}" for i in card["ingredients"]]
     lines += ["", "**הכנה:**"] + [f"{n}. {step}" for n, step in enumerate(card["steps"], 1)]

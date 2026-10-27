@@ -21,7 +21,7 @@ from typing import Callable
 
 from openai import APIError, RateLimitError
 
-from chat_logic import format_amount
+from chat_logic import diners, format_amount
 from goal_parser import parse_goal, unknown_dislikes, unknown_likes
 from llm import ConfigError, ask_model, create_client, daily_quota_message, fallback_models
 from tools import ALLERGENS, CATEGORIES, DIETS, DataError, MenuRequest, MenuTools, load_json
@@ -397,7 +397,7 @@ def print_recipes(tools: MenuTools):
     for dish in [*menu["mains"], menu["side"], menu["vegetable"], menu["dessert"]]:
         card = tools.recipe_card(dish)
         portion = " (60% מנה לסועד, כי יש שתי עיקריות)" if card["main_portion"] else ""
-        print(f"\n  🍳 {card['name']} - {card['time_minutes']} דקות, ל-{card['num_guests']} סועדים{portion}")
+        print(f"\n  🍳 {card['name']} - {card['time_minutes']} דקות, {diners(card['num_guests'], 'ל')}{portion}")
         print("  מצרכים:")
         for ing in card["ingredients"]:
             print(f"    - {format_amount(ing['amount'], ing['unit'])} {ing['name']}")

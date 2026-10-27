@@ -16,7 +16,7 @@ import streamlit as st
 from openai import APIError
 
 from agent import MenuAgent, short_args, summarize
-from chat_logic import (STATE_KEYS, cost_answer, delete_conversation, format_recipe, is_cost_question, is_thanks,
+from chat_logic import (STATE_KEYS, cost_answer, delete_conversation, diners, format_recipe, is_cost_question, is_thanks,
                         is_yes, list_conversations, load_conversation, menu_card_html, new_conversation_id,
                         requested_dishes, save_conversation, shopping_html, steps_html, user_html, wants_recipes)
 from hebrew_page import mark_page_hebrew
@@ -151,7 +151,7 @@ def describe_goal(goal) -> str:
     budget = f"תקציב {request.budget:g} ש\"ח"
     if request.target_budget is not None:
         budget = f"תקציב בערך {request.target_budget:g} ש\"ח (עד {request.budget:g} אם אין ברירה)"
-    lines = [f"**{request.num_guests} סועדים, {budget}**"]
+    lines = [f"**{diners(request.num_guests)}, {budget}**"]
     if request.kosher or st.session_state.kosher:
         lines.append("🕍 ארוחה כשרה - בלי בשר וחלב יחד")
     for g in request.guests:

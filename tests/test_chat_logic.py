@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from chat_logic import (cost_answer, delete_conversation, format_amount, format_recipe,  # noqa: E402
+from chat_logic import (cost_answer, delete_conversation, diners, format_amount, format_recipe,  # noqa: E402
                         is_cost_question, is_thanks, is_yes, list_conversations, load_conversation,
                         menu_card_html, requested_dishes, save_conversation, shopping_line, wants_recipes)
 from goal_parser import ParsedGoal  # noqa: E402
@@ -130,6 +130,14 @@ class TestRecipeFormatting(unittest.TestCase):
         for amount, unit, expected in cases:
             with self.subTest(amount=amount, unit=unit):
                 self.assertEqual(format_amount(amount, unit), expected)
+
+    def test_one_diner_is_not_plural(self):
+        # בצ'אט הופיע "1 סועדים"
+        self.assertEqual((diners(1), diners(8)), ("סועד אחד", "8 סועדים"))
+        self.assertEqual((diners(1, "ל"), diners(8, "ל")), ("לסועד אחד", "ל-8 סועדים"))
+        card = MenuTools(MenuRequest.from_dict({"num_guests": 1, "budget": 100})).recipe_card("שניצל עוף")
+        self.assertIn("לסועד אחד", format_recipe(card))
+        self.assertNotIn("1 סועדים", format_recipe(card))
 
     def test_every_recipe_has_steps_and_time(self):
         for recipe in load_json(DATA_DIR / "recipes.json"):
