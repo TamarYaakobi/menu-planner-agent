@@ -325,10 +325,11 @@ class MenuTools:
         """
         dishes, _ = self._parse_menu(menu)
         likes = self.likes_report(dishes)
-        guests = {g.name: g for g in self.request.guests}
-        for item in likes:
+        # likes_report עובר על האורחים ועל ה"אוהב" שלהם באותו סדר - כך כל שורה מתאימה לאורח שלה,
+        # גם כששני אורחים נקראים באותו שם ("אורח")
+        guests = [g for g in self.request.guests for _ in g.likes]
+        for item, guest in zip(likes, guests):
             if not item["in_menu"]:
-                guest = guests[item["guest"]]
                 options = [r for r in self.recipes.values() if item["likes"] in guest.liked_in(r)]
                 item["reason"] = self._why_not(menu, options, f"אין במאגר מנה עם {item['likes']}")
 

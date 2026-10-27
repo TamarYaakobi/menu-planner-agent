@@ -288,6 +288,12 @@ class TestPreferenceReasons(unittest.TestCase):
     def test_honest_when_it_was_possible(self):
         self.assertIn("אפשר היה", self.like_reason([{"name": "שירה", "likes": ["שקשוקה"]}]))
 
+    def test_guests_with_the_same_name_keep_their_own_reason(self):
+        # השני היה דורס את הראשון, והראשון קיבל "אין במאגר" על מנה שיש במאגר
+        likes = self.report([{"name": "אורח", "likes": ["שקשוקה"]}, {"name": "אורח", "likes": ["ארטישוק"]}])["likes"]
+        self.assertIn("אפשר היה", likes[0]["reason"])
+        self.assertIn("אין במאגר", likes[1]["reason"])
+
     def test_compromise_on_a_dislike_is_explained(self):
         report = self.report([{"name": "מירב", "dislikes": ["עגבניות"]}])  # בסלט הקצוץ יש עגבניות
         self.assertEqual(report["compromises"][0]["dish"], "סלט ירקות קצוץ")

@@ -87,9 +87,9 @@ GOAL_CASES = [
                 "likes": ["עוף", "חסה"]}},
     {"text": "8 סועדים, 250 שקל. רון רגיש לסויה",
      "expect": {"status": "ok", "num_guests": 8, "budget": 250, "profiles": [(("soy",), None)]}},
-    # "בערך" - היעד 400, ומותר עד 450
+    # "בערך" - היעד 400, ומותר עד 440 (10%)
     {"text": "6 סועדים, תקציב של בערך 400 שקל",
-     "expect": {"status": "ok", "num_guests": 6, "budget": 450, "target": 400, "profiles": []}},
+     "expect": {"status": "ok", "num_guests": 6, "budget": 440, "target": 400, "profiles": []}},
     {"text": "כ-10 אנשים, עד 300 שקל",
      "expect": {"status": "ok", "num_guests": 10, "budget": 300, "target": None, "profiles": []}},
 ]
@@ -153,6 +153,6 @@ UPDATE_CASES = [
      "expect": {"status": "ok", "num_guests": 4, "budget": 300, "kosher": True, "profiles": [(("dairy",), None)],
                 "likes": ["חסה"], "dislikes": ["פטריות"]}},
     {"previous": _BASE, "text": "התקציב בערך 400",
-     "expect": {"status": "ok", "num_guests": 4, "budget": 450, "target": 400, "profiles": [(("dairy",), None)],
+     "expect": {"status": "ok", "num_guests": 4, "budget": 440, "target": 400, "profiles": [(("dairy",), None)],
                 "likes": ["חסה"], "dislikes": ["פטריות"]}},
 ]

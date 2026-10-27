@@ -41,7 +41,7 @@ class FakeAgent:
         self.on_event("thought", {"text": "מחפש מנות"})
         if not FakeAgent.succeed:
             self.failure_reason = "יקר מדי"
-            self.best_cost = {"menu": VALID_MENU, "total_cost": 349.2, "budget": 300}
+            self.best_cost = {"menu": VALID_MENU, "total_cost": FakeAgent.failure_cost, "budget": 300}
             return False
         result = self.tools.finalize_menu(VALID_MENU)
         self.on_event("tool", {"name": "finalize_menu", "args": {"menu": VALID_MENU}, "result": result})
@@ -52,7 +52,7 @@ class ChatTestCase(unittest.TestCase):
     """הכנה משותפת: מודל ואג'נט מזויפים, ותיקיית היסטוריה זמנית."""
 
     def setUp(self):
-        FakeAgent.succeed, FakeAgent.last_previous_menu = True, None
+        FakeAgent.succeed, FakeAgent.last_previous_menu, FakeAgent.failure_cost = True, None, 349.2
         self.history = tempfile.TemporaryDirectory()
         self.parse = mock.Mock(return_value=ParsedGoal("ok", request=REQUEST, model="fake"))
         self.patches = [mock.patch("goal_parser.parse_goal", self.parse),
@@ -192,6 +192,17 @@ class TestChat(ChatTestCase):
         reply = self.send("כן")
         self.assertIn("לא מצאתי", reply)
         self.assertIn("עם תקציב של 350", reply)
+
+    def test_failure_within_budget_offers_a_retry_not_a_budget(self):
+        # נגמרו הצעדים, אבל התפריט הזול בתקציב - "תקציב של 250" (נמוך מהנוכחי) היה מבלבל
+        FakeAgent.succeed, FakeAgent.failure_cost = False, 249.5
+        self.send("4 איש, 300 שקל")
+        reply = self.send("כן")
+        self.assertNotIn("עם תקציב של", reply)
+        self.assertIn("בתוך התקציב", reply)
+        FakeAgent.succeed = True
+        self.assertIn("הנה התפריט", self.send("כן"))  # "כן" באמת מנסה שוב
+        self.assertEqual(FakeAgent.last_previous_menu["total_cost"], 249.5)  # מהתפריט הזול שנמצא
 
     def test_model_unavailable(self):
         self.parse.side_effect = APITimeoutError(request=httpx2.Request("POST", "https://example.com"))

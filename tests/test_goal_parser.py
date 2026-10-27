@@ -66,7 +66,10 @@ class TestCrossCheck(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(is_approximate(text), expected)
         request, _ = build_request({"num_guests": 4, "budget_total": 400}, approximate=True)
-        self.assertEqual((request["target_budget"], request["budget"]), (400, 450))
+        self.assertEqual((request["target_budget"], request["budget"]), (400, 440))
+        # אחוז ולא סכום קבוע: "בערך 150" - עד 165, לא עד 200
+        request, _ = build_request({"num_guests": 4, "budget_total": 150}, approximate=True)
+        self.assertEqual(request["budget"], 165)
         MenuRequest.from_dict(request)  # תקין
 
     def test_explicit_ceiling_beats_the_model(self):
@@ -87,7 +90,7 @@ class TestCrossCheck(unittest.TestCase):
         self.assertIn("בקירוב", " ".join(result.assumptions))
         result = parse_goal(FakeClient(submit(parsed(budget_total=400, budget_approximate=True))), "fake",
                             "4 איש, יש לי בערך 400")
-        self.assertEqual(result.request["budget"], 450)
+        self.assertEqual(result.request["budget"], 440)
 
     def test_hebrew_prefixes(self):
         for text in ("אלרגי לגלוטן", "ולגלוטן", "אלרגית לביצים", "רגיש ללקטוז", "אלרגי לאגוזים", "ומהדגים"):
@@ -208,6 +211,10 @@ class TestBuildRequest(unittest.TestCase):
     def test_float_guest_count(self):
         request, _ = build_request({"num_guests": 12.0, "budget_total": 100})
         self.assertIs(type(request["num_guests"]), int)
+
+    def test_duplicate_names_are_numbered(self):
+        request, _ = build_request(parsed([guest("ילד"), {"allergies": ["nuts"]}, guest("ילד"), {}]))
+        self.assertEqual([g["name"] for g in request["guests"]], ["ילד", "אורח", "ילד 2", "אורח 2"])
 
     def test_garbage_is_left_for_validation(self):
         request, _ = build_request({"num_guests": "הרבה", "budget_per_guest": 40, "guests": ["x"]})
@@ -378,11 +385,11 @@ class TestUpdates(unittest.TestCase):
     def test_changes_are_described(self):
         from goal_parser import describe_changes
         old = {"num_guests": 4, "budget": 300, "guests": [guest("דני", allergies=["dairy"])]}
-        new = {"num_guests": 5, "budget": 450, "target_budget": 400,
+        new = {"num_guests": 5, "budget": 440, "target_budget": 400,
                "guests": [guest("דני", allergies=["dairy", "nuts"]), guest("נועה", diet="vegan")]}
         changes = describe_changes(old, new)
         self.assertIn("סועדים: מ-4 ל-5", changes)
-        self.assertIn("תקציב: מ-300 ל-בערך 400 (עד 450)", changes)
+        self.assertIn("תקציב: מ-300 ל-בערך 400 (עד 440)", changes)
         self.assertTrue(any(c.startswith("נוסף/ה: נועה") for c in changes))
         self.assertTrue(any(c.startswith("דני:") and "אגוזים" in c for c in changes))
 

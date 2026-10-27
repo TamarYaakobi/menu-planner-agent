@@ -271,6 +271,7 @@ def plan():
         say(menu_card_html(approved, request_data, unknown_likes(request_data)) + NEXT_STEPS, html=True,
             events=lines, steps=agent.steps_used, shopping_list=approved["shopping_list"])
     else:
+        st.session_state.stage = "confirm"  # "כן" = לנסות שוב עם אותה בקשה
         if agent.best_cost:  # בפעם הבאה (למשל אחרי שהתקציב עלה) - מתחילים מהתפריט הזול ביותר שנמצא
             st.session_state.previous_menu = {"menu": agent.best_cost["menu"],
                                               "total_cost": agent.best_cost["total_cost"]}
@@ -281,8 +282,12 @@ def failure_answer(agent) -> str:
     lines = ["😕 **לא מצאתי תפריט שעומד בכל הדרישות.**", "", agent.failure_reason or ""]
     if agent.best_cost:
         cost = agent.best_cost["total_cost"]
-        lines += ["", f"התפריט התקין הזול ביותר שמצאתי עולה **{cost:.0f} ש\"ח** ({short_args(agent.best_cost)}).",
-                  f"עם תקציב של {int(cost) + 1} ש\"ח זה יסתדר - רוצה שאתכנן ככה? כתבי \"התקציב הוא {int(cost) + 1}\"."]
+        lines += ["", f"התפריט התקין הזול ביותר שמצאתי עולה **{cost:.0f} ש\"ח** ({short_args(agent.best_cost)})."]
+        if cost > agent.best_cost["budget"]:
+            lines.append(f"עם תקציב של {int(cost) + 1} ש\"ח זה יסתדר - רוצה שאתכנן ככה? "
+                         f"כתבי \"התקציב הוא {int(cost) + 1}\".")
+        else:  # התפריט בתקציב - הכישלון לא בגלל הכסף (למשל נגמרו הצעדים), אז אין טעם להציע תקציב
+            lines.append("הוא בתוך התקציב - כתבי \"כן\" ואנסה שוב, מהתפריט הזה.")
     return "\n".join(lines)
 
 

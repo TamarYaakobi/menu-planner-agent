@@ -20,8 +20,9 @@ from tools import ALLERGENS, DATA_DIR, DIETS, MenuRequest, load_json
 
 MAX_ATTEMPTS = 3
 MAX_TEXT_LENGTH = 2000
-# "בערך 400": מנסים להישאר ב-400, ומותר לעבור עד 450. סכום קבוע לבקשת המשתמשת - בתקציבים קטנים זה הרבה יחסית
-APPROX_MARGIN = 50
+# "בערך 400": מנסים להישאר ב-400, ומותר לעבור עד 440. אחוז ולא סכום קבוע - 50 ש"ח על "בערך 150" זה שליש יותר.
+# 10% כי זה מה ש"בערך" אומר בדרך כלל (400 = בין 360 ל-440). 5% היה כמעט תקרה קשיחה: 7.5 ש"ח על 150
+APPROX_MARGIN = 0.10
 # "בערך 400", "בסביבות 400", "כ-400", "~400", "around 400". "עד 400" הוא תקרה, לא "בערך"
 _APPROX_WORD = r"(בערך|בסביבות|סביב|כ-|כ־|~|around|about|approximately|roughly)"
 # רק על סכום כסף: "כ-10 אנשים" לא אומר שהתקציב גמיש
@@ -325,12 +326,27 @@ def build_request(parsed: dict, approximate: bool = False, kosher: bool = False)
                    "diet": g.get("diet"), "dislikes": g.get("dislikes") or [],
                    "likes": g.get("likes") or []} if isinstance(g, dict) else g
                   for g in guests]
+        _unique_names(guests)
     request = {"num_guests": num_guests, "budget": budget, "guests": guests}
     if kosher:
         request["kosher"] = True
     if approximate and isinstance(budget, (int, float)) and budget > 0:
-        request["target_budget"], request["budget"] = budget, round(budget + APPROX_MARGIN, 2)
+        request["target_budget"], request["budget"] = budget, round(budget * (1 + APPROX_MARGIN), 2)
     return request, []
+
+
+def _unique_names(guests: list):
+    """
+    שני אורחים באותו שם ("אורח", "ילד") -> "ילד", "ילד 2". השם הוא המזהה של האורח בהשוואת עדכונים
+    ובהסברים - בשמות זהים, אורח אחד היה דורס את השני.
+    """
+    seen: dict[str, int] = {}
+    for g in guests:
+        if not isinstance(g, dict) or not isinstance(g.get("name"), str):
+            continue
+        seen[g["name"]] = seen.get(g["name"], 0) + 1
+        if seen[g["name"]] > 1:
+            g["name"] = f"{g['name']} {seen[g['name']]}"
 
 
 def parse_goal(client, model: str, text: str, on_wait=None,
