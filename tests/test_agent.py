@@ -14,7 +14,8 @@ from openai.types.chat import ChatCompletionMessage
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent import MenuAgent, _retry_delay  # noqa: E402
+from agent import MenuAgent  # noqa: E402
+from llm import retry_delay as _retry_delay  # noqa: E402
 from evaluate import find_best_menu, judge  # noqa: E402
 from scenarios import SCENARIOS  # noqa: E402
 from tools import MenuRequest, MenuTools  # noqa: E402
@@ -251,6 +252,21 @@ class TestUI(unittest.TestCase):
         for scenario in SCENARIOS:  # כל תרחיש נטען בלי שגיאה, כולל הלא-תקין
             app.sidebar.selectbox[0].set_value(scenario["id"]).run()
             self.assertFalse(app.exception, f"{scenario['id']}: {app.exception}")
+
+    def test_free_text_requires_confirming_warnings(self):
+        from streamlit.testing.v1 import AppTest
+        from goal_parser import ParsedGoal
+        app = AppTest.from_file(str(Path(__file__).parent.parent / "ui.py"), default_timeout=30).run()
+        request = {"num_guests": 15, "budget": 400, "guests": []}
+        app.session_state["goal"] = {"result": ParsedGoal("ok", request=request, unsupported=["בוטנים"]), "n": 1}
+        app.radio[0].set_value("שפה חופשית").run()
+        self.assertFalse(app.exception, app.exception)
+
+        def run_button():
+            return next(b for b in app.button if b.label.startswith("▶️"))
+        self.assertTrue(run_button().disabled, "אסור להריץ לפני אישור האזהרות")
+        app.checkbox(key="confirm_goal1").check().run()
+        self.assertFalse(run_button().disabled)
 
     def test_sandbox_buttons(self):
         from streamlit.testing.v1 import AppTest

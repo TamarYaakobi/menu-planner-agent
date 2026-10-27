@@ -1,6 +1,6 @@
 {
   "שוקי עוף": {"price": 32.9, "package_size": 1000, "unit": "g"},
-  "חזה עוף": {"price": 46.9, "package_size": 1000, "unit": "g"},
+  "חזה עוף": {"price": 37, "package_size": 1000, "unit": "g"},
   "פילה סלמון": {"price": 109.9, "package_size": 1000, "unit": "g"},
   "בשר בקר טחון": {"price": 64.9, "package_size": 1000, "unit": "g"},
 

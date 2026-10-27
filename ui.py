@@ -14,9 +14,12 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+from openai import APIError
+
 from agent import MAX_STEPS, SYSTEM_PROMPT, describe_request, short_args, summarize
 from evaluate import VERDICT_ICON, find_best_menu, run_scenario
-from llm import DEFAULT_MODEL
+from goal_parser import parse_goal, unknown_dislikes
+from llm import DEFAULT_MODEL, ConfigError, create_client
 from scenarios import SCENARIOS
 from tools import ALLERGENS, CATEGORIES, DIETS, MenuRequest, MenuTools
 
@@ -71,7 +74,7 @@ def table_to_guests(table: pd.DataFrame) -> list[dict]:
 
 
 def request_editor(scenario: dict) -> dict:
-    """טופס עריכה. המפתחות כוללים את מזהה התרחיש, כך שהחלפת תרחיש מאפסת את הטופס."""
+    """טופס עריכה. המפתחות כוללים את מזהה התרחיש, כך שהחלפת תרחיש (או פענוח חדש) מאפסת את הטופס."""
     sid, data = scenario["id"], scenario["request"]
     c1, c2 = st.columns(2)
     num_guests = c1.number_input("מספר סועדים", value=data["num_guests"], step=1, key=f"n_{sid}")
@@ -172,10 +175,62 @@ def show_result(r: dict):
 
 # ---------- הלשוניות ----------
 
+def goal_input(model: str) -> tuple[dict | None, str, bool]:
+    """
+    מטרה בשפה חופשית: המודל מפענח, ואת התוצאה אפשר לערוך בטופס לפני ההרצה.
+    מחזיר (בקשה, כותרת, אפשר להריץ).
+    """
+    text = st.text_area("מה התוכנית?", key="goal_text", height=100,
+                        placeholder="למשל: אני מארחת 12 איש בשישי, יש לי 300 ש\"ח. אחותי טבעונית והבן שלה אלרגי לאגוזים.")
+    if st.button("🧠 הבן את הבקשה"):
+        try:
+            client, default_model = create_client()
+            with st.spinner("מפענח..."):
+                result = parse_goal(client, model or default_model, text)
+        except ConfigError as e:
+            st.error(str(e))
+            return None, "", False
+        except APIError as e:  # כולל חריגה ממכסה
+            st.error(f"שגיאה בתקשורת עם המודל ({type(e).__name__}). נסי מודל אחר בסרגל הצד.")
+            return None, "", False
+        st.session_state.goal = {"result": result, "n": st.session_state.get("goal", {}).get("n", 0) + 1}
+
+    if "goal" not in st.session_state:
+        return None, "", False
+    result = st.session_state.goal["result"]
+    if result.status == "needs_info":
+        st.info("חסר מידע - הוסיפי אותו לטקסט ולחצי שוב:\n\n" + "\n".join(f"- {q}" for q in result.questions))
+        return None, "", False
+    if result.status != "ok":
+        st.error(result.error)
+        return None, "", False
+
+    st.success(f"הבנתי את הבקשה (ניסיונות: {result.attempts}). אפשר לתקן בטופס לפני ההרצה.")
+    for title, items, show in (("הנחות שעשיתי", result.assumptions, st.info),
+                               ("הגבלות שהמערכת לא יודעת לבדוק - התפריט לא מתחשב בהן", result.unsupported, st.warning),
+                               ("ייתכן שלא הבנתי נכון", result.warnings, st.warning),
+                               ("לא מופיע באף מנה במאגר", unknown_dislikes(result.request), st.info)):
+        if items:
+            show(f"**{title}:**\n\n" + "\n".join(f"- {item}" for item in items))
+
+    goal_scenario = {"id": f"goal{st.session_state.goal['n']}", "request": result.request}
+    request_data = request_editor(goal_scenario)
+    # הגבלה שלא נבדקת או חשד לטעות בפענוח - חייבים אישור של אדם
+    confirmed = not (result.unsupported or result.warnings) or st.checkbox(
+        "קראתי את האזהרות ואני מאשרת להמשיך", key=f"confirm_{goal_scenario['id']}")
+    return request_data, "מטרה בשפה חופשית", confirmed
+
+
 def agent_tab(scenario: dict, model: str, max_steps: int):
-    st.markdown(f"**{scenario['title']}** - {scenario['description']}")
-    st.caption(f"התוצאה הנכונה: {EXPECT_TEXT[scenario['expect']]}")
-    request_data = request_editor(scenario)
+    source = st.radio("מקור הבקשה", ["תרחיש מוכן", "שפה חופשית"], horizontal=True)
+    if source == "שפה חופשית":
+        request_data, title, can_run = goal_input(model)
+        if request_data is None:
+            return
+    else:
+        st.markdown(f"**{scenario['title']}** - {scenario['description']}")
+        st.caption(f"התוצאה הנכונה: {EXPECT_TEXT[scenario['expect']]}")
+        request_data, title, can_run = request_editor(scenario), scenario["title"], True
 
     with st.expander("👁️ מה המודל מקבל"):
         try:
@@ -185,11 +240,11 @@ def agent_tab(scenario: dict, model: str, max_steps: int):
         st.caption("System prompt:")
         st.code(SYSTEM_PROMPT, language=None)
 
-    if st.button("▶️ הרץ את האג'נט", type="primary"):
+    if st.button("▶️ הרץ את האג'נט", type="primary", disabled=not can_run):
         log = st.container(border=True)
         with st.spinner("האג'נט עובד..."):
             st.session_state.last_run = run_agent(request_data, model, max_steps, log)
-            st.session_state.last_run["title"] = scenario["title"]
+            st.session_state.last_run["title"] = title
     elif "last_run" in st.session_state:
         st.caption(f"הריצה האחרונה ({st.session_state.last_run['title']}):")
         log = st.container(border=True)

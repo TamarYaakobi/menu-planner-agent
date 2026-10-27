@@ -9,6 +9,7 @@
 הרצת תרחישים מהטרמינל, עם טבלת תוצאות:
     python evaluate.py                          # כל התרחישים
     python evaluate.py edge_budget conflicting  # רק אלה
+    python evaluate.py --goals                  # פענוח מטרות בשפה חופשית
 """
 import argparse
 import sys
@@ -18,6 +19,8 @@ from itertools import combinations, product
 from openai import APIError, RateLimitError
 
 from agent import MAX_STEPS, MenuAgent, print_event
+from goal_cases import GOAL_CASES, check_goal
+from goal_parser import parse_goal
 from llm import ConfigError, create_client
 from scenarios import SCENARIOS
 from tools import DataError, MenuRequest, MenuTools
@@ -130,6 +133,32 @@ def run_scenario(request_data: dict, model: str | None = None, max_steps: int = 
 VERDICT_ICON = {"pass": "✅", "partial": "⚠️", "fail": "❌", "bug": "🐞"}
 
 
+def run_goal_cases(model: str | None, verbose: bool) -> int:
+    """מריץ את המפענח על כל משפטי הבדיקה ומשווה לתשובה הנכונה."""
+    client, default_model = create_client()
+    passed = 0
+    for case in GOAL_CASES:
+        try:
+            result = parse_goal(client, model or default_model, case["text"])
+        except APIError as e:  # תקלה בשרת - לא כישלון של הפענוח, אבל גם לא הצלחה
+            print(f"⚠️ {case['text']}\n     - שגיאה בתקשורת עם המודל ({type(e).__name__})")
+            continue
+        problems = check_goal(case["expect"], result)
+        passed += not problems
+        print(f"{'✅' if not problems else '❌'} {case['text']}")
+        for p in problems:
+            print(f"     - {p}")
+        if verbose or problems:
+            print(f"     ← {result.status}, ניסיונות: {result.attempts}, בקשה: {result.request}")
+            for label, items in (("הנחות", result.assumptions), ("לא נתמך", result.unsupported),
+                                 ("אזהרות", result.warnings)):
+                if items:
+                    print(f"       {label}: {items}")
+    print("\n" + "═" * 50)
+    print(f"עברו: {passed}/{len(GOAL_CASES)}")
+    return 0
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -139,7 +168,10 @@ def main() -> int:
                         help=f"מזהי תרחישים (ברירת מחדל: כולם). אפשרויות: {', '.join(by_id)}")
     parser.add_argument("--model", help="מודל אחר מזה שב-.env")
     parser.add_argument("--verbose", action="store_true", help="להציג כל צעד של האג'נט")
+    parser.add_argument("--goals", action="store_true", help="לבדוק פענוח של מטרות בשפה חופשית")
     args = parser.parse_args()
+    if args.goals:
+        return run_goal_cases(args.model, args.verbose)
     unknown = [sid for sid in args.scenarios if sid not in by_id]
     if unknown:
         parser.error(f"תרחישים לא מוכרים: {unknown}. אפשרויות: {', '.join(by_id)}")

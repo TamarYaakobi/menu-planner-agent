@@ -3,6 +3,8 @@
 
     python agent.py                                  # בקשת ברירת המחדל
     python agent.py examples/impossible_budget.json  # בקשה אחרת
+    python agent.py --goal "12 איש, 300 שקל, אחותי טבעונית"   # מטרה בשפה חופשית
+    python agent.py --ask                            # לשאול את המטרה בטרמינל
 
 איך זה עובד:
   1. המודל מקבל מטרה (אורחים, תקציב), כללים ורשימת כלים.
@@ -13,22 +15,20 @@
 """
 import argparse
 import json
-import re
 import sys
-import time
 from pathlib import Path
 from typing import Callable
 
 from openai import APIError, RateLimitError
 
-from llm import ConfigError, create_client
+from goal_parser import parse_goal, unknown_dislikes
+from llm import ConfigError, ask_model, create_client
 from tools import ALLERGENS, CATEGORIES, DIETS, DataError, MenuRequest, MenuTools, load_json
 
 MAX_STEPS = 15         # מגבלת קריאות למודל - מונעת לולאה אינסופית ועלות לא צפויה
 MAX_NUDGES = 1         # כמה פעמים להזכיר למודל להמשיך אם עצר בלי לסיים
 LOW_STEPS_WARNING = 3  # כשנשארים כך צעדים, מזהירים את המודל כדי שיחליט אם לוותר
-RATE_LIMIT_MAX_WAIT = 60  # שניות. המתנה ארוכה יותר = מכסה יומית, ואין טעם לחכות
-RATE_LIMIT_RETRIES = 5
+MAX_QUESTION_ROUNDS = 3  # כמה פעמים לשאול את המשתמש על מידע חסר במטרה
 DEFAULT_REQUEST = Path(__file__).parent / "examples" / "friday_dinner.json"
 
 SYSTEM_PROMPT = """אתה אג'נט שמתכנן תפריט לארוחה משפחתית.
@@ -122,7 +122,7 @@ MENU_TOOLS = {"search_recipes", "calculate_cost", "check_guests", "suggest_swaps
 
 
 def describe_request(request: MenuRequest) -> str:
-    """המטרה, כטקסט שנשלח למודל."""
+    """המטרה כטקסט: מוצגת למשתמש, ונשלחת למודל (יחד עם ההוראה לתכנן)."""
     lines = [f"מספר סועדים: {request.num_guests}", f"תקציב: {request.budget:g} ש\"ח"]
     if request.guests:
         lines.append("אורחים עם אילוצים:")
@@ -135,7 +135,6 @@ def describe_request(request: MenuRequest) -> str:
         if g.dislikes:
             parts.append("לא אוהב/ת: " + ", ".join(g.dislikes))
         lines.append(f"- {g.name}: " + "; ".join(parts or ["אין הגבלות"]))
-    lines.append("\nתכנן את התפריט.")
     return "\n".join(lines)
 
 
@@ -164,7 +163,7 @@ class MenuAgent:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": describe_request(self.tools.request)
-             + f"\nיש לך עד {self.max_steps} צעדים."},
+             + f"\n\nתכנן את התפריט. יש לך עד {self.max_steps} צעדים."},
         ]
         nudges = 0
 
@@ -212,18 +211,8 @@ class MenuAgent:
         return False
 
     def _ask_model(self, messages: list):
-        """שולח את השיחה למודל. בחריגה ממכסה לדקה - מחכה וממשיך; במכסה יומית - זורק הלאה."""
-        for attempt in range(RATE_LIMIT_RETRIES + 1):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model, messages=messages, tools=TOOL_SCHEMAS)
-                return response.choices[0].message
-            except RateLimitError as e:
-                wait = _retry_delay(e)
-                if wait is None or wait > RATE_LIMIT_MAX_WAIT or attempt == RATE_LIMIT_RETRIES:
-                    raise
-                self._emit("rate_limit", seconds=wait)
-                time.sleep(wait + 1)
+        return ask_model(self.client, self.model, messages, TOOL_SCHEMAS,
+                         on_wait=lambda seconds: self._emit("rate_limit", seconds=seconds))
 
     def _execute(self, name: str, raw_args: str) -> dict:
         """מריץ כלי אחד. כל בעיה חוזרת למודל כ-error, כדי שיוכל לתקן."""
@@ -283,12 +272,6 @@ def describe_swap(swap: dict) -> str:
         return f"להחליף את '{swap['replace']}' ב-'{swap['with']}'"
     pairs = [f"'{old}' ב-'{new}'" for old, new in zip(swap["replace"], swap["with"])]
     return "להחליף יחד את " + " ואת ".join(pairs)
-
-
-def _retry_delay(error: RateLimitError) -> float | None:
-    """Gemini כותב בגוף השגיאה כמה לחכות: 'retry in 5.7s'. מכסה יומית ('20h34m') לא תתאים."""
-    match = re.search(r"retry in ([\d.]+)s", str(error))
-    return float(match.group(1)) if match else None
 
 
 # ---------- הצגה ----------
@@ -373,24 +356,89 @@ def print_failure(reason: str, best_cost: dict | None):
         print(f"  עלות: {best_cost['total_cost']:.2f} ש\"ח (תקציב: {best_cost['budget']:g})")
 
 
+def understand_goal(client, model: str, text: str, interactive: bool, auto_yes: bool) -> dict | None:
+    """
+    מטרה בשפה חופשית -> בקשה מובנית. שואל את המשתמש כשחסר מידע, ומבקש אישור להבנה.
+    מחזיר None אם המשתמש ביטל או שאי אפשר להמשיך.
+    """
+    for _ in range(MAX_QUESTION_ROUNDS):
+        print("🧠 מפענח את הבקשה...")
+        goal = parse_goal(client, model, text,
+                          on_wait=lambda s: print_event("rate_limit", {"seconds": s}))
+        if goal.status == "needs_info":
+            if not interactive:
+                print("חסר מידע: " + " ".join(goal.questions))
+                return None
+            text += "\n" + "\n".join(f"{q} {input(q + ' ')}" for q in goal.questions)
+            continue
+        if goal.status != "ok":
+            print(f"שגיאה: {goal.error}")
+            return None
+
+        print("\n🎯 כך הבנתי את הבקשה:\n" + describe_request(MenuRequest.from_dict(goal.request)))
+        for title, items in (("הנחות שעשיתי", goal.assumptions),
+                             ("⚠️ הגבלות שהמערכת לא יודעת לבדוק - התפריט לא מתחשב בהן", goal.unsupported),
+                             ("⚠️ ייתכן שלא הבנתי נכון", goal.warnings),
+                             ("לא מופיע באף מנה במאגר", unknown_dislikes(goal.request))):
+            if items:
+                print(f"\n{title}:\n" + "\n".join(f"  - {item}" for item in items))
+
+        # הגבלה שלא נבדקת או חשד לטעות בפענוח - תמיד דורשים אישור של אדם, גם עם --yes
+        needs_attention = bool(goal.unsupported or goal.warnings)
+        if auto_yes and not needs_attention:
+            return goal.request
+        if not interactive:
+            print("\nיש כאן משהו שדורש אישור. הריצי שוב בטרמינל, בלי --yes, כדי לאשר.")
+            return None
+        if input("\nלהמשיך עם ההבנה הזו? (כן/לא) ").strip().lower() in ("כ", "כן", "y", "yes"):
+            return goal.request
+        print("בוטל. אפשר לנסח את הבקשה מחדש.")
+        return None
+
+    print("לא הצלחתי לקבל את כל המידע שצריך.")
+    return None
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")  # כדי שעברית ואימוג'י יודפסו נכון ב-Windows
     sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="אג'נט לתכנון תפריט בתקציב")
     parser.add_argument("request", nargs="?", default=str(DEFAULT_REQUEST),
                         help="קובץ JSON עם האורחים והתקציב")
+    parser.add_argument("--goal", help="המטרה בשפה חופשית, למשל: \"12 איש, 300 שקל, אחותי טבעונית\"")
+    parser.add_argument("--ask", action="store_true", help="לשאול את המטרה בטרמינל")
+    parser.add_argument("--yes", action="store_true",
+                        help="לא לבקש אישור להבנת המטרה (רק כשאין אזהרות)")
     args = parser.parse_args()
 
-    # שגיאות הגדרה עוצרות לפני שמתחילים - האג'נט לא יכול לתקן אותן
     try:
-        request = MenuRequest.from_dict(load_json(Path(args.request)))
-        tools = MenuTools(request)
         client, model = create_client()
+        if args.goal or args.ask:
+            text = args.goal or input("מה התוכנית? (מי מגיע, תקציב, אלרגיות...) ")
+            request_data = understand_goal(client, model, text, sys.stdin.isatty(), args.yes)
+            if request_data is None:
+                return 2
+        else:
+            request_data = load_json(Path(args.request))
+        # שגיאות הגדרה עוצרות לפני שמתחילים - האג'נט לא יכול לתקן אותן
+        request = MenuRequest.from_dict(request_data)
+        tools = MenuTools(request)
     except (DataError, ValueError, ConfigError) as e:
         print(f"שגיאה: {e}")
         return 2
+    except RateLimitError:
+        print("\n❌ נגמרה מכסת הבקשות למודל. אפשר לנסות שוב מאוחר יותר, "
+              "או להחליף מודל ב-LLM_MODEL שבקובץ .env")
+        return 1
+    except APIError as e:
+        print(f"\n❌ שגיאה בתקשורת עם המודל ({type(e).__name__}): {e}")
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print("\nבוטל.")
+        return 2
 
-    print("🎯 המטרה:\n" + describe_request(request))
+    if not (args.goal or args.ask):  # במטרה חופשית ההבנה כבר הוצגה
+        print("🎯 המטרה:\n" + describe_request(request))
     agent = MenuAgent(client, model, tools)
     try:
         success = agent.run()

@@ -16,7 +16,7 @@ SCENARIOS = [
         "title": "ארוחת שישי (רגיל)",
         "description": "4 אורחים עם אילוצים שונים, תקציב צפוף. התרחיש של ההדגמה.",
         "expect": "success",
-        "request": {"num_guests": 10, "budget": 160, "guests": _FRIDAY_GUESTS},
+        "request": {"num_guests": 10, "budget": 146, "guests": _FRIDAY_GUESTS},
     },
     {
         "id": "generous",
@@ -30,7 +30,7 @@ SCENARIOS = [
         "title": "על הגבול",
         "description": "התקציב גבוה בשקל אחד בלבד מהתפריט התקין הזול ביותר. רק פתרון אחד או שניים עובדים.",
         "expect": "success",
-        "request": {"num_guests": 10, "budget": 149, "guests": _FRIDAY_GUESTS},
+        "request": {"num_guests": 10, "budget": 137.8, "guests": _FRIDAY_GUESTS},
     },
     {
         "id": "impossible_budget",
@@ -92,7 +92,7 @@ SCENARIOS = [
         "description": "5 אורחים עם 9 מרכיבים לא אהובים - כל החלפה עלולה לשבור העדפה של מישהו אחר. "
                        "רק 2 תפריטים תקינים בתקציב, בהפרש של שקל אחד.",
         "expect": "success",
-        "request": {"num_guests": 12, "budget": 184.6, "guests": [
+        "request": {"num_guests": 12, "budget": 171.9, "guests": [
             {"name": "אבי", "dislikes": ["עגבניות", "פטריות"]},
             {"name": "בתיה", "dislikes": ["עדשים", "שום"]},
             {"name": "גיא", "dislikes": ["תפוחי אדמה", "אורז"]},
@@ -105,7 +105,7 @@ SCENARIOS = [
         "title": "בררנים ואלרגיים",
         "description": "שילוב של העדפות, אלרגיות (אגוזים וחלב) וצמחונות. רק 2 תפריטים תקינים בתקציב.",
         "expect": "success",
-        "request": {"num_guests": 12, "budget": 181, "guests": [
+        "request": {"num_guests": 12, "budget": 172.1, "guests": [
             {"name": "אבי", "dislikes": ["עגבניות", "מלפפונים", "קישואים"]},
             {"name": "בתיה", "dislikes": ["שוקולד", "תפוזים", "אבטיח"]},
             {"name": "גיא", "allergies": ["nuts", "dairy"]},
@@ -118,7 +118,7 @@ SCENARIOS = [
         "description": "אותם בררנים ואלרגיים, והתקציב נמוך בשקל אחד מהתפריט הזול ביותר. "
                        "כדי לדווח נכון, האג'נט חייב להגיע בדיוק למינימום.",
         "expect": "failure",
-        "request": {"num_guests": 12, "budget": 176, "guests": [
+        "request": {"num_guests": 12, "budget": 163, "guests": [
             {"name": "אבי", "dislikes": ["עגבניות", "מלפפונים", "קישואים"]},
             {"name": "בתיה", "dislikes": ["שוקולד", "תפוזים", "אבטיח"]},
             {"name": "גיא", "allergies": ["nuts", "dairy"]},
