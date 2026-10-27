@@ -16,7 +16,7 @@ SCENARIOS = [
         "title": "ארוחת שישי (רגיל)",
         "description": "4 אורחים עם אילוצים שונים, תקציב צפוף. התרחיש של ההדגמה.",
         "expect": "success",
-        "request": {"num_guests": 10, "budget": 146, "guests": _FRIDAY_GUESTS},
+        "request": {"num_guests": 10, "budget": 121, "guests": _FRIDAY_GUESTS},
     },
     {
         "id": "generous",
@@ -30,24 +30,24 @@ SCENARIOS = [
         "title": "על הגבול",
         "description": "התקציב גבוה בשקל אחד בלבד מהתפריט התקין הזול ביותר. רק פתרון אחד או שניים עובדים.",
         "expect": "success",
-        "request": {"num_guests": 10, "budget": 137.8, "guests": _FRIDAY_GUESTS},
+        "request": {"num_guests": 10, "budget": 115.5, "guests": _FRIDAY_GUESTS},
     },
     {
         "id": "impossible_budget",
         "title": "תקציב בלתי אפשרי",
         "description": "גם התפריט הזול ביותר יקר מהתקציב. האג'נט צריך לזהות ולדווח, לא להמשיך לנסות.",
         "expect": "failure",
-        "request": {"num_guests": 10, "budget": 90,
+        "request": {"num_guests": 10, "budget": 80,
                     "guests": [{"name": "יוסי", "diet": "vegan"}, {"name": "אבי", "allergies": ["gluten"]}]},
     },
     {
         "id": "conflicting",
         "title": "אילוצים סותרים",
-        "description": "אורח טבעוני שלא אוהב עדשים - והעיקרית הטבעונית היחידה היא קארי עדשים. "
+        "description": "אורחת טבעונית שלא אוהבת עדשים ועגבניות - ובשתי העיקריות הטבעוניות יש אחד מהם. "
                        "אין פתרון בגלל ההעדפות, לא בגלל הכסף.",
         "expect": "failure",
         "request": {"num_guests": 8, "budget": 500,
-                    "guests": [{"name": "נועה", "diet": "vegan", "dislikes": ["עדשים"]}]},
+                    "guests": [{"name": "נועה", "diet": "vegan", "dislikes": ["עדשים", "עגבניות"]}]},
     },
     {
         "id": "many_constraints",
@@ -66,9 +66,9 @@ SCENARIOS = [
         "id": "every_allergy",
         "title": "כל סוגי האלרגיות",
         "description": "5 אורחים, לכל אחד אלרגיה אחרת (גלוטן, ביצים, חלב, אגוזים, דגים). "
-                       "התקציב משאיר רק 2 תפריטים תקינים מתוך 192.",
+                       "התקציב משאיר רק 2 תפריטים תקינים מתוך 3,540.",
         "expect": "success",
-        "request": {"num_guests": 12, "budget": 156, "guests": [
+        "request": {"num_guests": 12, "budget": 114, "guests": [
             {"name": "עומר", "allergies": ["gluten"]},
             {"name": "רון", "allergies": ["eggs"]},
             {"name": "ליאת", "allergies": ["dairy"]},
@@ -81,7 +81,7 @@ SCENARIOS = [
         "title": "אלרגית לכל החמישה",
         "description": "אורחת אחת אלרגית לכל האלרגנים, ואורח צמחוני. רק 2 תפריטים תקינים בתקציב.",
         "expect": "success",
-        "request": {"num_guests": 10, "budget": 130, "guests": [
+        "request": {"num_guests": 10, "budget": 95, "guests": [
             {"name": "נגה", "allergies": ["gluten", "eggs", "dairy", "nuts", "fish"]},
             {"name": "יוסי", "diet": "vegetarian"},
         ]},
@@ -92,7 +92,7 @@ SCENARIOS = [
         "description": "5 אורחים עם 9 מרכיבים לא אהובים - כל החלפה עלולה לשבור העדפה של מישהו אחר. "
                        "רק 2 תפריטים תקינים בתקציב, בהפרש של שקל אחד.",
         "expect": "success",
-        "request": {"num_guests": 12, "budget": 171.9, "guests": [
+        "request": {"num_guests": 12, "budget": 136, "guests": [
             {"name": "אבי", "dislikes": ["עגבניות", "פטריות"]},
             {"name": "בתיה", "dislikes": ["עדשים", "שום"]},
             {"name": "גיא", "dislikes": ["תפוחי אדמה", "אורז"]},
@@ -105,7 +105,7 @@ SCENARIOS = [
         "title": "בררנים ואלרגיים",
         "description": "שילוב של העדפות, אלרגיות (אגוזים וחלב) וצמחונות. רק 2 תפריטים תקינים בתקציב.",
         "expect": "success",
-        "request": {"num_guests": 12, "budget": 172.1, "guests": [
+        "request": {"num_guests": 12, "budget": 136, "guests": [
             {"name": "אבי", "dislikes": ["עגבניות", "מלפפונים", "קישואים"]},
             {"name": "בתיה", "dislikes": ["שוקולד", "תפוזים", "אבטיח"]},
             {"name": "גיא", "allergies": ["nuts", "dairy"]},
@@ -118,7 +118,7 @@ SCENARIOS = [
         "description": "אותם בררנים ואלרגיים, והתקציב נמוך בשקל אחד מהתפריט הזול ביותר. "
                        "כדי לדווח נכון, האג'נט חייב להגיע בדיוק למינימום.",
         "expect": "failure",
-        "request": {"num_guests": 12, "budget": 163, "guests": [
+        "request": {"num_guests": 12, "budget": 133, "guests": [
             {"name": "אבי", "dislikes": ["עגבניות", "מלפפונים", "קישואים"]},
             {"name": "בתיה", "dislikes": ["שוקולד", "תפוזים", "אבטיח"]},
             {"name": "גיא", "allergies": ["nuts", "dairy"]},
@@ -156,6 +156,17 @@ SCENARIOS = [
         ]},
     },
     {
+        "id": "kosher",
+        "title": "ארוחה כשרה",
+        "description": "בלי בשר וחלב יחד. שירה אוהבת עוגת גבינה (חלבי) ואבי אוהב עוף (בשרי) - "
+                       "אי אפשר לממש את שתי ההעדפות באותה ארוחה, והאג'נט צריך לבחור.",
+        "expect": "success",
+        "request": {"num_guests": 10, "budget": 200, "kosher": True, "guests": [
+            {"name": "שירה", "likes": ["עוגת גבינה"]},
+            {"name": "אבי", "likes": ["עוף"]},
+        ]},
+    },
+    {
         "id": "single_guest",
         "title": "סועד יחיד",
         "description": "ארוחה לאדם אחד. בודק שהחישובים עובדים גם בכמויות קטנות.",
@@ -167,7 +178,7 @@ SCENARIOS = [
         "title": "50 סועדים",
         "description": "אירוע גדול עם תקציב צפוף. בודק שהעלות גדלה נכון עם מספר הסועדים.",
         "expect": "success",
-        "request": {"num_guests": 50, "budget": 650,
+        "request": {"num_guests": 50, "budget": 493,
                     "guests": [{"name": "יוסי", "diet": "vegetarian"}]},
     },
     {

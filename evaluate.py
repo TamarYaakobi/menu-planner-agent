@@ -21,33 +21,53 @@ from openai import APIError, RateLimitError
 from agent import MAX_STEPS, MenuAgent, print_event
 from goal_cases import GOAL_CASES, UPDATE_CASES, check_goal
 from goal_parser import ParsedGoal, parse_goal
-from llm import ConfigError, create_client
+from llm import ConfigError, create_client, fallback_models
 from scenarios import SCENARIOS
 from tools import DataError, MenuRequest, MenuTools
 
 
 def find_best_menu(tools: MenuTools) -> dict:
-    """מוצא את התפריט התקין הזול ביותר (מחיר מלא + כל האורחים מסודרים), בלי קשר לתקציב."""
-    by_category = {c: [n for n, r in tools.recipes.items() if r["category"] == c]
+    """
+    מוצא את התפריט התקין הזול ביותר (מחיר מלא + כל האורחים מסודרים), בלי קשר לתקציב.
+    עם 40 מתכונים יש כ-59,000 צירופים, אז:
+      - עלות כל מנה מחושבת פעם אחת (אותה פונקציה שהכלים משתמשים בה), ועלות תפריט = סכום.
+      - תוספת/ירקות/קינוח שמישהו לא יכול לאכול - מסוננים מראש (הם פסולים לפי הכללים בכל מקרה).
+    את התקינות עצמה עדיין קובע check_guests - בדיוק כמו אצל האג'נט.
+    """
+    guests = tools.request.guests
+    costs = {}
+    for name in tools.recipes:
+        cost, missing = tools.dish_cost(name)
+        costs[name] = None if missing else cost
+
+    def usable(name):
+        recipe = tools.recipes[name]
+        if costs[name] is None:
+            return False
+        return recipe["category"] == "main" or not any(g.hard_conflicts(recipe) for g in guests)
+
+    by_category = {c: [n for n, r in tools.recipes.items() if r["category"] == c and usable(n)]
                    for c in ("main", "side", "vegetable", "dessert")}
+    needs_check = bool(guests) or tools.request.kosher  # בלי אורחים ובלי כשרות - כל תפריט תקין
     best, valid_count, within_budget_count = None, 0, 0
-    total_likes = sum(len(g.likes) for g in tools.request.guests)
+    total_likes = sum(len(g.likes) for g in guests)
     max_likes = 0  # הכי הרבה העדפות "אוהב/ת" שאפשר לכלול בתפריט תקין שבתקציב
 
     for mains, side, vegetable, dessert in product(combinations(by_category["main"], 2),
                                                    by_category["side"], by_category["vegetable"],
                                                    by_category["dessert"]):
         menu = {"mains": list(mains), "side": side, "vegetable": vegetable, "dessert": dessert}
-        cost = tools.calculate_cost(menu)
-        guests = tools.check_guests(menu)
-        if not cost["complete"] or not guests["all_satisfied"]:
+        total = round(sum(costs[d] for d in (*mains, side, vegetable, dessert)), 2)
+        check = tools.check_guests(menu) if needs_check else {"all_satisfied": True}
+        if not check["all_satisfied"]:
             continue
         valid_count += 1
-        within_budget_count += cost["within_budget"]
-        if cost["within_budget"] and total_likes:
-            max_likes = max(max_likes, sum(x["in_menu"] for x in guests.get("likes", [])))
-        if best is None or cost["total_cost"] < best["total_cost"]:
-            best = {"menu": menu, "total_cost": cost["total_cost"]}
+        within_budget = total <= tools.request.budget
+        within_budget_count += within_budget
+        if within_budget and total_likes:
+            max_likes = max(max_likes, sum(x["in_menu"] for x in check.get("likes", [])))
+        if best is None or total < best["total_cost"]:
+            best = {"menu": menu, "total_cost": total}
 
     return {
         "best": best,                                   # None = אין תפריט תקין בכלל
@@ -215,7 +235,8 @@ def main() -> int:
     rows = []
     for sid in args.scenarios or list(by_id):
         print(f"▶ {by_id[sid]['title']}...", flush=True)
-        r = run_scenario(by_id[sid]["request"], args.model, on_event=print_event if args.verbose else None)
+        r = run_scenario(by_id[sid]["request"], args.model, on_event=print_event if args.verbose else None,
+                         fallbacks=fallback_models())
         status, text = r["verdict"] or ("fail", r.get("error", ""))
         rows.append((sid, status, r.get("steps", 0), r.get("duration", 0)))
         print(f"  {VERDICT_ICON[status]} {text}")

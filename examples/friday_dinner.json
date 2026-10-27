@@ -1,6 +1,6 @@
 {
   "num_guests": 10,
-  "budget": 146,
+  "budget": 121,
   "guests": [
     {"name": "דנה", "allergies": ["nuts"]},
     {"name": "יוסי", "diet": "vegetarian"},

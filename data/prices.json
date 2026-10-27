@@ -50,5 +50,20 @@
   "שמן זית": {"price": 44.9, "package_size": 1000, "unit": "ml"},
   "שמן קנולה": {"price": 13.9, "package_size": 1000, "unit": "ml"},
   "פפריקה": {"price": 11.9, "package_size": 100, "unit": "g"},
-  "אבקת קארי": {"price": 9.9, "package_size": 100, "unit": "g"}
+  "אבקת קארי": {"price": 9.9, "package_size": 100, "unit": "g"},
+
+  "חצילים": {"price": 9.9, "package_size": 1000, "unit": "g"},
+  "טחינה גולמית": {"price": 17.9, "package_size": 500, "unit": "g"},
+  "גבינה לבנה": {"price": 5.9, "package_size": 250, "unit": "g"},
+  "גבינה צהובה": {"price": 14.9, "package_size": 200, "unit": "g"},
+  "מוצרלה": {"price": 9.9, "package_size": 125, "unit": "g"},
+  "תרד": {"price": 12.9, "package_size": 400, "unit": "g"},
+  "קינואה": {"price": 19.9, "package_size": 500, "unit": "g"},
+  "כרוב": {"price": 4.9, "package_size": 1000, "unit": "g"},
+  "גזר": {"price": 4.9, "package_size": 1000, "unit": "g"},
+  "פרגיות": {"price": 54.9, "package_size": 1000, "unit": "g"},
+  "בשר בקר לבישול": {"price": 69.9, "package_size": 1000, "unit": "g"},
+  "פילה אמנון": {"price": 59.9, "package_size": 1000, "unit": "g"},
+  "עמילן תירס": {"price": 6.9, "package_size": 400, "unit": "g"},
+  "בזיליקום": {"price": 5.9, "package_size": 50, "unit": "g"}
 }

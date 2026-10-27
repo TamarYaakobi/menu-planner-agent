@@ -2,6 +2,7 @@
 הלוגיקה של הצ'אט, בלי תצוגה - כדי שאפשר יהיה לבדוק אותה ישירות.
 chat.py מציג; כאן מחליטים ומנסחים.
 """
+import html
 import json
 import math
 import os
@@ -38,6 +39,81 @@ def is_thanks(text: str) -> bool:
     return bool(words) and all(w in THANKS for w in words)
 
 
+# ---------- תצוגה (HTML) ----------
+# כל טקסט שמגיע מהמשתמשת או מהמודל (שמות אורחים, סיבות) עובר escape - אי אפשר להזריק דרכו HTML.
+# חלונות מתקפלים: <details> של הדפדפן, ולא st.expander - שהחץ שלו תלוי בגופן אייקונים שלא תמיד נטען
+
+_UNIT_CODES = {"גרם": "g", 'מ"ל': "ml", "יח'": "unit"}
+
+
+def _e(text) -> str:
+    return html.escape(str(text))
+
+
+def shopping_line(item: dict) -> tuple[str, str]:
+    """("צריך", "לקנות") בעברית טבעית: ("14 גרם", "אריזה אחת של 100 גרם")."""
+    unit = _UNIT_CODES.get(item["unit"], "unit")
+    needed = format_amount(item["needed"], unit)
+    if unit == "unit" and item["package_size"] == 1:
+        return needed, f"{item['packages']} יח'"
+    package = format_amount(item["package_size"], unit)
+    count = "אריזה אחת" if item["packages"] == 1 else f"{item['packages']} אריזות"
+    return needed, f"{count} של {package}"
+
+
+def shopping_html(items: list[dict]) -> str:
+    rows = "".join(f"<tr><td>{_e(i['item'])}</td><td>{_e(need)}</td><td>{_e(buy)}</td></tr>"
+                   for i in items for need, buy in [shopping_line(i)])
+    return (f'<details class="box"><summary>🛒 רשימת קניות ({len(items)} מוצרים)</summary>'
+            f'<table class="shop"><tr><th>מוצר</th><th>צריך</th><th>לקנות</th></tr>{rows}</table></details>')
+
+
+def steps_html(lines: list[str], steps) -> str:
+    def line_html(line):  # `שם_כלי` -> <code>
+        parts = _e(line).split("`")
+        return "".join(f"<code>{p}</code>" if i % 2 else p for i, p in enumerate(parts))
+    items = "".join(f"<li>{line_html(line)}</li>" for line in lines)
+    return f'<details class="box"><summary>🔍 איך הגעתי לזה ({_e(steps)} צעדים)</summary><ul class="steps">{items}</ul></details>'
+
+
+def menu_card_html(approved: dict, request: dict, missing_likes: list[str]) -> str:
+    """התפריט כ"כרטיס": המנות, המחיר, ומה קרה לכל העדפה - כולל למה לא נכנסה."""
+    menu, cost = approved["menu"], approved["total_cost"]
+    target = request.get("target_budget")
+    if target is not None:
+        budget = f"ביעד של {target:g}" if cost <= target else f"מעל היעד של {target:g}, בתוך {request['budget']:g}"
+    else:
+        budget = f"מתוך {request['budget']:g} ש\"ח"
+    rows = [("🍗 עיקריות", f"{menu['mains'][0]}, {menu['mains'][1]}"), ("🥔 תוספת", menu["side"]),
+            ("🥗 ירקות", menu["vegetable"]), ("🍰 קינוח", menu["dessert"])]
+    parts = ['<div class="menu-card">',
+             f'<div class="menu-head"><span class="menu-title">✅ הנה התפריט</span>'
+             f'<span class="price">{cost:.0f} ש"ח</span></div>',
+             f'<div class="menu-sub">{_e(budget)} · {approved["cost_per_guest"]:.0f} ש"ח לסועד'
+             f'{" · 🕍 כשר" if request.get("kosher") else ""}</div>']
+    parts += [f'<div class="menu-row"><span class="label">{label}</span><span>{_e(dishes)}</span></div>'
+              for label, dishes in rows]
+    prefs = []
+    for like in approved.get("likes", []):
+        who = f"{_e(like['guest'])} אוהב/ת {_e(like['likes'])}"
+        if like["in_menu"]:
+            prefs.append(f'<div class="pref">❤️ {who} - יש ב{_e(", ".join(like["dishes"]))}</div>')
+        else:
+            why = "אין לי מתכון עם זה" if like["likes"] in missing_likes else like.get("reason", "")
+            prefs.append(f'<div class="pref">🤍 {who} - לא נכנס<span class="why">{_e(why)}</span></div>')
+    for item in approved.get("compromises", []):
+        prefs.append(f'<div class="pref">🔸 {_e(item["guest"])} לא אוהב/ת {_e(item["dislikes"])}, ויש ב{_e(item["dish"])}'
+                     f' (מותר עד מנה אחת)<span class="why">{_e(item["reason"])}</span></div>')
+    if prefs:
+        parts.append('<div class="prefs">' + "".join(prefs) + "</div>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def user_html(text: str) -> str:
+    return f'<div class="user-msg">{_e(text).replace(chr(10), "<br>")}</div>'
+
+
 # ---------- שאלות על התפריט ----------
 
 # שאלה ("כמה יעלה לסועד?", "מה המחיר?") - לא בקשה לשנות ("תוריד את העלות" הוא תיקון, לא שאלה)
@@ -66,7 +142,7 @@ def cost_answer(saved_menu: dict) -> str:
 # ---------- היסטוריית שיחות ----------
 
 # מה נשמר מכל שיחה - מספיק כדי להמשיך בדיוק מאיפה שהפסקנו
-STATE_KEYS = ("messages", "stage", "goal_text", "goal", "model", "menu", "previous_menu")
+STATE_KEYS = ("messages", "stage", "goal_text", "goal", "model", "menu", "previous_menu", "kosher")
 
 
 def history_dir() -> Path:

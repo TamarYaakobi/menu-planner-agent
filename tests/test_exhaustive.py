@@ -27,15 +27,20 @@ INGREDIENT_ALLERGENS = {
     "פירורי לחם": {"gluten", "sesame", "soy"}, "שוקולד מריר": {"soy"},
     "ביצים": {"eggs"},
     "חמאה": {"dairy"}, "חלב": {"dairy"}, "שמנת לבישול": {"dairy"}, "פרמזן": {"dairy"}, "גבינה בולגרית": {"dairy"},
+    "גבינה לבנה": {"dairy"}, "גבינה צהובה": {"dairy"}, "מוצרלה": {"dairy"},
     "שקדים": {"nuts"}, "אגוזי מלך": {"nuts"},
-    "פילה סלמון": {"fish"},
+    "טחינה גולמית": {"sesame"},
+    "פילה סלמון": {"fish"}, "פילה אמנון": {"fish"},
 }
-NOT_VEGETARIAN = {"שוקי עוף", "חזה עוף", "בשר בקר טחון", "פילה סלמון"}
+MEAT = {"שוקי עוף", "חזה עוף", "בשר בקר טחון", "פרגיות", "בשר בקר לבישול"}
+FISH = {"פילה סלמון", "פילה אמנון"}
+NOT_VEGETARIAN = MEAT | FISH
 SAFE = {
     "תפוחי אדמה", "בטטה", "בצל", "שום", "עגבניות", "מלפפונים", "פלפל אדום", "קישואים", "פטריות שמפיניון",
     "חסה", "לימון", "פטרוזיליה", "שמיר", "רוזמרין", "תפוחים", "בננות", "תפוזים", "אבטיח", "אורז",
     "עדשים כתומות", "עדשים ירוקות", "סוכר", "חלב קוקוס", "רסק עגבניות", "זיתים",
     "שמן זית", "שמן קנולה", "פפריקה", "אבקת קארי", "כמהין",
+    "חצילים", "תרד", "קינואה", "כרוב", "גזר", "עמילן תירס", "בזיליקום",
 }
 LIKE_POOL = ["חסה", "שקשוקה", "סלמון", "עוף", "שוקולד", "אבטיח", "פסטה", "עדשים", "פטריות"]
 DISLIKE_POOL = ["עגבניות", "פטריות", "עדשים", "שום", "בצל", "תפוחי אדמה", "אורז", "עוף", "בקר", "סלמון",
@@ -53,6 +58,14 @@ def oracle_can_eat(guest: dict, dish: str) -> bool:
 
 def oracle_dislikes(guest: dict, dish: str) -> bool:
     return any(d in ing["name"] for d in guest.get("dislikes", []) for ing in BY_NAME[dish]["ingredients"])
+
+
+def oracle_kosher_ok(menu: dict) -> bool:
+    """כשרות, ישירות מהמרכיבים: אסור שיהיו גם בשר וגם חלב (דגים ופרווה - מותר)."""
+    ingredients = {i["name"] for d in menu["mains"] + [menu["side"], menu["vegetable"], menu["dessert"]]
+                   for i in BY_NAME[d]["ingredients"]}
+    has_dairy = any("dairy" in INGREDIENT_ALLERGENS.get(i, set()) for i in ingredients)
+    return not (ingredients & MEAT and has_dairy)
 
 
 def oracle_guests_ok(guests: list, menu: dict) -> bool:
@@ -89,6 +102,8 @@ def oracle_valid_total(request: dict, menu: dict) -> float | None:
     cost = oracle_cost(request["num_guests"], menu)
     if cost is None or not oracle_guests_ok(request["guests"], menu):
         return None
+    if request.get("kosher") and not oracle_kosher_ok(menu):
+        return None
     return cost
 
 
@@ -106,7 +121,7 @@ def random_guest(rng: random.Random, i: int) -> dict:
 
 
 def random_request(rng: random.Random) -> dict:
-    return {"num_guests": rng.randint(5, 30), "budget": rng.uniform(80, 400),
+    return {"num_guests": rng.randint(5, 30), "budget": rng.uniform(80, 400), "kosher": rng.random() < 0.3,
             "guests": [random_guest(rng, i) for i in range(rng.randint(0, 5))]}
 
 
@@ -133,6 +148,16 @@ class TestAllergenData(unittest.TestCase):
         for r in RECIPES:
             expected = set().union(*(INGREDIENT_ALLERGENS.get(i["name"], set()) for i in r["ingredients"]))
             self.assertEqual(set(r["allergens"]), expected, r["name"])
+
+    def test_kashrut_is_derived_correctly(self):
+        from tools import kashrut
+        for r in RECIPES:
+            names = {i["name"] for i in r["ingredients"]}
+            has_dairy = any("dairy" in INGREDIENT_ALLERGENS.get(n, set()) for n in names)
+            with self.subTest(r["name"]):
+                self.assertFalse(names & MEAT and has_dairy, "מנה עם בשר וחלב יחד")
+                expected = "dairy" if has_dairy else "meat" if names & MEAT else "parve"
+                self.assertEqual(kashrut(r), expected)
 
     def test_diet_tags_match_ingredients(self):
         for r in RECIPES:
@@ -189,7 +214,8 @@ class TestToolsAgreeWithOracle(unittest.TestCase):
             request, menu = random_request(rng), random_menu(rng)
             tools = tools_for(request)
             with self.subTest(request=request, menu=menu):
-                guests_ok = oracle_guests_ok(request["guests"], menu)
+                guests_ok = oracle_guests_ok(request["guests"], menu) and (
+                    not request["kosher"] or oracle_kosher_ok(menu))
                 self.assertEqual(tools.check_guests(menu)["all_satisfied"], guests_ok)
 
                 cost = oracle_cost(request["num_guests"], menu)
@@ -251,7 +277,7 @@ class TestSolverAgreesWithOracle(unittest.TestCase):
 
     def test_cheapest_menu(self):
         rng = random.Random(3)
-        for _ in range(25):
+        for _ in range(8):  # כ-59,000 תפריטים לכל בקשה - האורקל איטי, אז פחות בקשות
             request = random_request(rng)
             totals = [t for t in (oracle_valid_total(request, m) for m in _all_menus()) if t is not None]
             truth = find_best_menu(tools_for(request))

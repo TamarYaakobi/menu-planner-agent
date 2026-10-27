@@ -25,6 +25,19 @@ ALLERGENS = {"gluten": "גלוטן", "eggs": "ביצים", "dairy": "חלב", "n
              "peanuts": "בוטנים", "sesame": "שומשום", "soy": "סויה"}
 DIETS = {"vegetarian": "צמחונית", "vegan": "טבעונית"}
 UNITS = {"g": "גרם", "ml": "מ\"ל", "unit": "יח'"}
+KASHRUT = {"meat": "בשרי", "dairy": "חלבי", "parve": "פרווה"}
+
+
+def kashrut(recipe: dict) -> str:
+    """
+    בשרי / חלבי / פרווה - נגזר מהתגיות הקיימות, כדי שלא יהיה שדה נוסף שאפשר לשכוח לעדכן:
+    חלב -> חלבי. לא צמחוני ולא דג -> בשרי. כל השאר (כולל דגים) -> פרווה.
+    """
+    if "dairy" in recipe["allergens"]:
+        return "dairy"
+    if "vegetarian" not in recipe["diet"] and "fish" not in recipe["allergens"]:
+        return "meat"
+    return "parve"
 
 # יש שתי מנות עיקריות, ואף אחד לא אוכל שתי מנות מלאות - מחשבים 60% מנה מכל אחת
 MAIN_PORTION_FACTOR = 0.6
@@ -90,6 +103,7 @@ class MenuRequest:
     budget: float                                      # תקרה קשיחה - finalize_menu לא יאשר מעליה
     guests: list[Guest] = field(default_factory=list)  # רק אורחים עם אילוצים או העדפות
     target_budget: float | None = None                 # "בערך 400": היעד. מותר לעבור אותו עד budget
+    kosher: bool = False                               # בלי בשר וחלב באותה ארוחה
 
     @classmethod
     def from_dict(cls, data: dict) -> MenuRequest:
@@ -135,7 +149,10 @@ class MenuRequest:
                     or not math.isfinite(target) or not 0 < target <= budget):
                 raise ValueError("יעד התקציב חייב להיות מספר חיובי, ולא גבוה מהתקציב המקסימלי")
             target = float(target)
-        return cls(num_guests, float(budget), guests, target)
+        kosher = data.get("kosher", False)
+        if not isinstance(kosher, bool):
+            raise ValueError("kosher צריך להיות true או false")
+        return cls(num_guests, float(budget), guests, target, kosher)
 
 
 # ---------- הכלים ----------
@@ -198,7 +215,7 @@ class MenuTools:
                 continue
             if include_any and not any(x in n for x in include_any for n in names + [r["name"]]):
                 continue
-            results.append({"name": r["name"], "allergens": r["allergens"],
+            results.append({"name": r["name"], "allergens": r["allergens"], "kashrut": kashrut(r),
                             "diet": r["diet"], "ingredients": names})
 
         result = {"category": category, "count": len(results), "recipes": results}
@@ -215,15 +232,9 @@ class MenuTools:
 
         breakdown, missing = [], []
         for r in dishes:
-            servings = self._servings(r)
-            cost = 0.0
-            for ing in r["ingredients"]:
-                item = self.prices.get(ing["name"])
-                if item is None:
-                    missing.append({"dish": r["name"], "ingredient": ing["name"]})
-                    continue
-                cost += ing["amount"] * servings / item["package_size"] * item["price"]
-            breakdown.append({"name": r["name"], "category": r["category"], "cost": round(cost, 2)})
+            cost, no_price = self.dish_cost(r["name"])
+            missing += [{"dish": r["name"], "ingredient": name} for name in no_price]
+            breakdown.append({"name": r["name"], "category": r["category"], "cost": cost})
 
         total = round(sum(d["cost"] for d in breakdown), 2)
         result = {
@@ -279,6 +290,15 @@ class MenuTools:
                 add(g, "soft", f"יותר מדי מנות עם מרכיבים לא אהובים: {disliked} "
                                f"(מותר עד {MAX_DISLIKED_NON_MAIN})")
 
+        # כשרות: אילוץ על כל התפריט, לא על אורח מסוים
+        if self.request.kosher:
+            meat = [r["name"] for r in dishes if kashrut(r) == "meat"]
+            dairy = [r["name"] for r in dishes if kashrut(r) == "dairy"]
+            if meat and dairy:
+                violations.append({"guest": "כשרות", "type": "hard",
+                                   "problem": f"בשר וחלב באותה ארוחה - בשרי: {', '.join(meat)}; "
+                                              f"חלבי: {', '.join(dairy)}"})
+
         result = {"all_satisfied": not violations, "violations": violations,
                   "guests_checked": len(self.request.guests)}
         likes = self.likes_report(dishes)
@@ -294,6 +314,88 @@ class MenuTools:
                 found = [r["name"] for r in dishes if like in g.liked_in(r)]
                 report.append({"guest": g.name, "likes": like, "in_menu": bool(found), "dishes": found})
         return report
+
+    # ---------- למה העדפה לא מומשה (למשתמש, אחרי שהתפריט אושר) ----------
+
+    def preferences_report(self, menu: dict) -> dict:
+        """
+        likes: כל "אוהב/ת" - האם בתפריט, ואם לא - למה.
+        compromises: "לא אוהב/ת" שבכל זאת יש בתפריט (מותר עד מנה אחת) - ולמה לא הוחלף.
+        הסיבה נבדקת בקוד: מנסים לשים בתפריט מנה מתאימה, ובודקים מה היה נשבר.
+        """
+        dishes, _ = self._parse_menu(menu)
+        likes = self.likes_report(dishes)
+        guests = {g.name: g for g in self.request.guests}
+        for item in likes:
+            if not item["in_menu"]:
+                guest = guests[item["guest"]]
+                options = [r for r in self.recipes.values() if item["likes"] in guest.liked_in(r)]
+                item["reason"] = self._why_not(menu, options, f"אין במאגר מנה עם {item['likes']}")
+
+        compromises = []
+        for g in self.request.guests:
+            for r in dishes:
+                if r["category"] == "main" or not g.disliked_ingredients(r):
+                    continue  # בעיקריות - יש לו את השנייה. כאן: מנה שכולם אוכלים
+                disliked = ", ".join(g.disliked_ingredients(r))
+                options = [x for x in self.recipes.values()
+                           if x["category"] == r["category"] and x["name"] != r["name"] and not g.disliked_ingredients(x)]
+                compromises.append({"guest": g.name, "dislikes": disliked, "dish": r["name"],
+                                    "reason": self._why_not(menu, options, f"אין חלופה בלי {disliked}")})
+        return {"likes": likes, "compromises": compromises}
+
+    def _why_not(self, menu: dict, options: list[dict], no_options: str) -> str:
+        """הסיבה הכי רלוונטית לכך שאף אחת מהמנות לא בתפריט. אם אחת מהן הייתה עובדת - אומרים את זה בכנות."""
+        if not options:
+            return no_options
+        outcomes = sorted((self._try_dish(menu, r) for r in options), key=lambda o: o[0])
+        rank, text = outcomes[0]
+        if rank == 0:
+            return f"אפשר היה - {text} - אבל האג'נט בחר אחרת"
+        reasons = list(dict.fromkeys(t for _, t in outcomes))
+        return "; ".join(reasons[:2]) + (" ועוד" if len(reasons) > 2 else "")
+
+    def _try_dish(self, menu: dict, recipe: dict) -> tuple[int, str]:
+        """
+        מה קורה אם שמים את המנה בתפריט (במקום המנה מאותה קטגוריה; בעיקריות - במקום אחת מהשתיים).
+        מחזיר (דירוג, הסבר): 0 עובד, 1 מעל היעד, 2 מעל התקציב, 3 "לא אוהב", 4 אלרגיה/תזונה, 5 חסר מחיר.
+        """
+        slots = [s for s in MENU_SLOTS if self.recipes[self._dish_at(menu, s)]["category"] == recipe["category"]]
+        results = []
+        for slot in slots:
+            candidate = self._replace(menu, *slot, recipe["name"])
+            if candidate["mains"][0] == candidate["mains"][1]:
+                continue
+            cost = self.calculate_cost(candidate)
+            violations = self.check_guests(candidate)["violations"]
+            hard = [v for v in violations if v["type"] == "hard"]
+            soft = [v for v in violations if v["type"] == "soft"]
+            name = recipe["name"]
+            # קצר וברור: "סלט חסה עם אגוזי מלך מכילה אגוזים (דנה)" - ולא הודעת ההפרה המלאה
+            blocked = [(g.name, g.hard_conflicts(recipe)) for g in self.request.guests if g.hard_conflicts(recipe)]
+            disliked = [(g.name, g.disliked_ingredients(recipe)) for g in self.request.guests
+                        if g.disliked_ingredients(recipe)]
+            if not cost["complete"]:
+                results.append((5, f"{name}: אין מחיר ל{cost['missing_prices'][0]['ingredient']}"))
+            elif hard and blocked:
+                results.append((4, f"{name} {blocked[0][1][0]} ({blocked[0][0]})"))
+            elif hard and hard[0]["guest"] == "כשרות":
+                other = "dairy" if kashrut(recipe) == "meat" else "meat"
+                results.append((4, f"{name} היא מנה {KASHRUT[kashrut(recipe)]}ת, ובתפריט יש מנה {KASHRUT[other]}ת "
+                                   f"(ארוחה כשרה)"))
+            elif hard:
+                results.append((4, f"{name}: {hard[0]['problem']} ({hard[0]['guest']})"))
+            elif soft and disliked:
+                results.append((3, f"ב{name} יש {', '.join(disliked[0][1])}, ו{disliked[0][0]} לא אוהב/ת"))
+            elif soft:
+                results.append((3, f"{name}: {soft[0]['problem']} ({soft[0]['guest']})"))
+            elif not cost["within_budget"]:
+                results.append((2, f"{name}: התפריט היה עולה {cost['total_cost']:.0f} ש\"ח - מעל התקציב"))
+            elif cost.get("within_target") is False:
+                results.append((1, f"{name}: התפריט היה עולה {cost['total_cost']:.0f} ש\"ח - מעל היעד"))
+            else:
+                results.append((0, f"עם {name} התפריט היה עולה {cost['total_cost']:.0f} ש\"ח"))
+        return min(results) if results else (6, f"{recipe['name']}: אין מקום בתפריט")
 
     # --- כלי 4 ---
     def finalize_menu(self, menu: dict) -> dict:
@@ -322,7 +424,7 @@ class MenuTools:
             "total_cost": cost["total_cost"],
             "cost_per_guest": cost["cost_per_guest"],
             "shopping_list": self._shopping_list(dishes),
-            "likes": self.likes_report(dishes),
+            **self.preferences_report(menu),
         }
         return {"approved": True, **self.approved_menu}
 
@@ -432,6 +534,19 @@ class MenuTools:
         else:
             new_menu["mains"][index] = dish
         return new_menu
+
+    def dish_cost(self, dish: str) -> tuple[float, list[str]]:
+        """עלות מנה אחת לכל הסועדים (מעוגלת לאגורה), ומרכיבים בלי מחיר. כל חישוב עלות עובר דרך כאן."""
+        recipe = self.recipes[dish]
+        servings = self._servings(recipe)
+        cost, missing = 0.0, []
+        for ing in recipe["ingredients"]:
+            item = self.prices.get(ing["name"])
+            if item is None:
+                missing.append(ing["name"])
+                continue
+            cost += ing["amount"] * servings / item["package_size"] * item["price"]
+        return round(cost, 2), missing
 
     def _servings(self, recipe: dict) -> float:
         factor = MAIN_PORTION_FACTOR if recipe["category"] == "main" else 1.0

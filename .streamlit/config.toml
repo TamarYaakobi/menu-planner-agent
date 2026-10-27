@@ -1,0 +1,13 @@
+# מראה אחיד לכל מי שמריץ את הפרויקט: ערכת צבעים בהירה וקבועה, בלי קשר להגדרות המחשב
+[theme]
+base = "light"
+primaryColor = "#E8590C"
+backgroundColor = "#FFFBF7"
+secondaryBackgroundColor = "#FFF1E6"
+textColor = "#2B2B2B"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

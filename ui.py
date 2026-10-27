@@ -18,12 +18,14 @@ from openai import APIError
 
 from agent import MAX_STEPS, SYSTEM_PROMPT, describe_request, short_args, summarize
 from evaluate import VERDICT_ICON, find_best_menu, run_scenario
+from hebrew_page import mark_page_hebrew
 from goal_parser import parse_goal, unknown_dislikes
 from llm import DEFAULT_MODEL, ConfigError, create_client, fallback_models
 from scenarios import SCENARIOS
 from tools import ALLERGENS, CATEGORIES, DIETS, MenuRequest, MenuTools
 
 st.set_page_config(page_title="בודק האג'נט", page_icon="🍽️", layout="wide")
+mark_page_hebrew()  # אחרת הדפדפן "מתרגם" את העברית ומשבש אותה
 st.markdown("""<style>
 .stApp, [data-testid="stSidebar"] { direction: rtl; text-align: right; }
 textarea, pre, code, [data-testid="stJson"] { direction: ltr; text-align: left; }
@@ -89,6 +91,8 @@ def request_editor(scenario: dict) -> dict:
         column_config={"תזונה": st.column_config.SelectboxColumn(options=["", *DIETS.values()])},
     )
     request = {"num_guests": int(num_guests), "budget": budget, "guests": table_to_guests(table)}
+    if st.checkbox("🕍 ארוחה כשרה (בלי בשר וחלב יחד)", value=bool(data.get("kosher")), key=f"k_{sid}"):
+        request["kosher"] = True
     if data.get("target_budget") is not None:  # "בערך" - היעד נשמר, והתקציב בטופס הוא המקסימום
         st.caption(f"התקציב בקירוב: יעד {data['target_budget']:g} ש\"ח, ומקסימום כפי שמופיע למעלה")
         request["target_budget"] = min(data["target_budget"], budget)

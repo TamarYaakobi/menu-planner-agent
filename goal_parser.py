@@ -65,7 +65,8 @@ PARSER_PROMPT = f"""אתה מפענח בקשות לתכנון ארוחה. קרא
   גם אם זה לא קיים במאגר ("אוהבת חצילים") - רשום אותו ב-likes כמו שהוא. הקוד יגיד למשתמש שאין מתכון כזה.
   "אוהב X" זה תמיד likes, ולעולם לא dislikes. אורח שרק אוהב משהו - גם הוא ב-guests.
   מנות שיש במאגר: {", ".join(_known_dishes())}
-- unsupported: הגבלה רפואית, דתית או תזונתית שאינה ברשימות למעלה - כשרות, סוכרת, פירות ים, חזיר וכו'.
+- kosher: true אם ביקשו ארוחה כשרה (בלי בשר וחלב יחד).
+- unsupported: הגבלה רפואית, דתית או תזונתית שאינה ברשימות למעלה - סוכרת, פירות ים, חזיר וכו'.
   אסור למפות אותה למשהו אחר. "לא אוהב X" זה תמיד dislikes, לא unsupported.
 - כל הגבלה חייבת להופיע אצל אורח: מי שצמחוני מקבל diet, מי שאלרגי מקבל allergies. לא מספיק לכתוב את זה ב-assumptions.
 - assumptions: כל הנחה שעשית, בעברית.
@@ -81,6 +82,7 @@ SUBMIT_TOOL = {"type": "function", "function": {
         "budget_total": {"type": ["number", "null"]},
         "budget_per_guest": {"type": ["number", "null"]},
         "budget_approximate": {"type": "boolean"},
+        "kosher": {"type": "boolean"},
         "guests": {"type": "array", "items": {"type": "object", "properties": {
             "name": {"type": "string"},
             "allergies": {"type": "array", "items": {"type": "string", "enum": list(ALLERGENS)}},
@@ -113,7 +115,7 @@ DIET_PATTERNS = {
     "vegan": r"(טבעונ\w*)",
     "vegetarian": r"(צמחונ\w*|לא\s+אוכל\w*\s+בשר)",
 }
-UNSUPPORTED_PATTERNS = [r"כשר\w*", r"סוכרת\w*", r"פירות\s+ים", r"חזיר"]
+UNSUPPORTED_PATTERNS = [r"סוכרת\w*", r"פירות\s+ים", r"חזיר"]
 
 
 def is_approximate(text: str) -> bool:
@@ -123,6 +125,15 @@ def is_approximate(text: str) -> bool:
 # "עד 300", "לא יותר מ-300", "מקסימום 300" - תקרה מפורשת
 # (מילה אחת מותרת באמצע: "שלא תעלה יותר מ300")
 CEILING_PATTERN = r"(עד|לא\s+(\S+\s+)?יותר\s+מ-?|מקסימום|max(imum)?|up\s+to|no\s+more\s+than)\s*\d"
+
+
+def kosher_requested(text: str, model_says: bool) -> bool:
+    """הקוד מכריע: "כשר/ה" בטקסט - כן, "לא (חייב) כשר" - לא. בלי אזכור - לפי המודל."""
+    if re.search(r"(לא|אין)\s+(\S+\s+)?(צורך\s+ב)?כשר", text):
+        return False
+    if re.search(_PREFIX + r"כשר\w*", text):
+        return True
+    return model_says
 
 
 def budget_is_approximate(text: str, model_says: bool) -> bool:
@@ -278,7 +289,7 @@ class ParsedGoal:
     changes: list[str] = field(default_factory=list)     # בעדכון: מה השתנה לעומת הבקשה הקודמת
 
 
-def build_request(parsed: dict, approximate: bool = False) -> tuple[dict | None, list[str]]:
+def build_request(parsed: dict, approximate: bool = False, kosher: bool = False) -> tuple[dict | None, list[str]]:
     """
     מה-JSON של המודל לבקשה. מחזיר (בקשה, שדות חסרים).
     הקוד - לא המודל - מחליט מה חסר, ומכפיל תקציב לאדם במספר הסועדים.
@@ -315,6 +326,8 @@ def build_request(parsed: dict, approximate: bool = False) -> tuple[dict | None,
                    "likes": g.get("likes") or []} if isinstance(g, dict) else g
                   for g in guests]
     request = {"num_guests": num_guests, "budget": budget, "guests": guests}
+    if kosher:
+        request["kosher"] = True
     if approximate and isinstance(budget, (int, float)) and budget > 0:
         request["target_budget"], request["budget"] = budget, round(budget + APPROX_MARGIN, 2)
     return request, []
@@ -431,7 +444,8 @@ def _evaluate(text: str, parsed: dict, attempt: int, previous: ParsedGoal | None
         return ParsedGoal("off_topic", error="הבקשה לא נראית כמו תכנון ארוחה", **common)
 
     approximate = budget_is_approximate(text, bool(parsed.get("budget_approximate")))
-    request, missing = build_request(parsed, approximate)
+    kosher = kosher_requested(text, parsed.get("kosher") is True)
+    request, missing = build_request(parsed, approximate, kosher)
     if missing:
         return ParsedGoal("needs_info", questions=[QUESTIONS[m] for m in missing], **common)
     if "target_budget" in request:
@@ -466,6 +480,7 @@ def _as_parser_input(goal: ParsedGoal) -> dict:
     return {"num_guests": request["num_guests"],
             "budget_total": target if target is not None else request["budget"],
             "budget_approximate": target is not None,
+            "kosher": bool(request.get("kosher")),
             "guests": request["guests"], "unsupported": goal.unsupported}
 
 
@@ -498,6 +513,8 @@ def describe_changes(old: dict, new: dict) -> list[str]:
         changes.append(f"סועדים: מ-{old['num_guests']} ל-{new['num_guests']}")
     if _budget_text(old) != _budget_text(new):
         changes.append(f"תקציב: מ-{_budget_text(old)} ל-{_budget_text(new)}")
+    if bool(old.get("kosher")) != bool(new.get("kosher")):
+        changes.append("ארוחה כשרה" if new.get("kosher") else "הארוחה כבר לא חייבת להיות כשרה")
     old_guests = {g["name"]: g for g in old["guests"]}
     new_guests = {g["name"]: g for g in new["guests"]}
     for name in new_guests.keys() - old_guests.keys():

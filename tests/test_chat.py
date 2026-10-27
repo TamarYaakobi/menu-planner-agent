@@ -35,6 +35,7 @@ class FakeAgent:
         self.tools, self.on_event = tools, on_event
         self.steps_used, self.failure_reason, self.best_cost = 2, None, None
         FakeAgent.last_previous_menu = previous_menu
+        FakeAgent.last_request = tools.request
 
     def run(self):
         self.on_event("thought", {"text": "מחפש מנות"})
@@ -161,6 +162,13 @@ class TestChat(ChatTestCase):
         self.parse.side_effect = TypeError("unhashable type: 'list'")
         reply = self.send("4 איש, 300 שקל")
         self.assertIn("משהו השתבש", reply)
+
+    def test_kosher_setting_applies_to_planning(self):
+        self.app.sidebar.toggle[0].set_value(True).run()
+        self.assertIn("ארוחה כשרה", self.send("4 איש, 300 שקל"))
+        self.assertIn("כשר", self.send("כן"))
+        self.assertTrue(FakeAgent.last_request.kosher)
+        self.assertTrue(self.app.session_state["menu"]["request"]["kosher"])  # גם המתכונים והעלות לפי אותה בקשה
 
     def test_thanks_after_menu(self):
         self.get_menu()

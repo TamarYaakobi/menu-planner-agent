@@ -37,6 +37,17 @@ class TestCrossCheck(unittest.TestCase):
         self.assertProblem("דני צליאק", parsed())
         self.assertProblem("דני צליאק", parsed([guest(allergies=["gluten"])]), False)
 
+    def test_kosher_detection(self):
+        from goal_parser import kosher_requested
+        for text, model_says, expected in (("ארוחה כשרה ל-10", False, True), ("אנחנו שומרים כשרות", False, True),
+                                           ("לא צריך כשר", True, False), ("אין צורך בכשרות", True, False),
+                                           ("10 איש, 300 שקל", True, True), ("10 איש, 300 שקל", False, False)):
+            with self.subTest(text):
+                self.assertEqual(kosher_requested(text, model_says), expected)
+        result = parse_goal(FakeClient(submit(parsed())), "fake", "ארוחה כשרה, 10 איש, 200 שקל")
+        self.assertTrue(result.request["kosher"])
+        MenuRequest.from_dict(result.request)
+
     def test_new_allergens(self):
         # סויה, שומשום ובוטנים - פעם היו "לא נתמכים", עכשיו אלרגיות רגילות
         for text, allergen in (("רון רגיש לסויה", "soy"), ("דנה אלרגית לשומשום", "sesame"),
@@ -107,9 +118,10 @@ class TestCrossCheck(unittest.TestCase):
 
     def test_unsupported_restriction_is_added_by_code(self):
         # מודל שהתעקש לא לרשום "סוכרתית" - הקוד מוסיף בעצמו
-        self.assertEqual(len(detect_unsupported("סבתא סוכרתית, וארוחה כשרה", parsed())), 2)
-        self.assertEqual(detect_unsupported("ארוחה כשרה", parsed(unsupported=["כשרות"])), [])
-        self.assertTrue(detect_unsupported("ארוחה כשרה", parsed()))
+        self.assertEqual(len(detect_unsupported("סבתא סוכרתית, ובלי פירות ים", parsed())), 2)
+        self.assertEqual(detect_unsupported("בלי פירות ים", parsed(unsupported=["פירות ים"])), [])
+        self.assertTrue(detect_unsupported("בלי חזיר", parsed()))
+        self.assertEqual(detect_unsupported("ארוחה כשרה", parsed()), [])  # כשרות - נתמכת עכשיו
         # הנחה מוצגת כמידע, לא כאזהרה - לא מספיקה
         self.assertTrue(detect_unsupported("סבתא סוכרתית", parsed(assumptions=["סבתא סוכרתית, לא נלקח בחשבון"])))
 
@@ -167,8 +179,8 @@ class TestCrossCheck(unittest.TestCase):
 
     def test_unknown_likes(self):
         from goal_parser import unknown_likes
-        request = {"guests": [guest(likes=["חצילים", "חסה", "שקשוקה"])]}
-        self.assertEqual(unknown_likes(request), ["חצילים"])
+        request = {"guests": [guest(likes=["ארטישוק", "חסה", "שקשוקה"])]}
+        self.assertEqual(unknown_likes(request), ["ארטישוק"])
 
     def test_like_mention_is_not_an_allergy(self):
         self.assertProblem("דנה אוהבת ביצים", parsed([guest(likes=["ביצים"])]), False)

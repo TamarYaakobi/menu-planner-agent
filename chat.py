@@ -12,14 +12,14 @@
 """
 import traceback
 
-import pandas as pd
 import streamlit as st
 from openai import APIError
 
 from agent import MenuAgent, short_args, summarize
 from chat_logic import (STATE_KEYS, cost_answer, delete_conversation, format_recipe, is_cost_question, is_thanks,
-                        is_yes, list_conversations, load_conversation, new_conversation_id, requested_dishes,
-                        save_conversation, wants_recipes)
+                        is_yes, list_conversations, load_conversation, menu_card_html, new_conversation_id,
+                        requested_dishes, save_conversation, shopping_html, steps_html, user_html, wants_recipes)
+from hebrew_page import mark_page_hebrew
 from goal_parser import parse_goal, unknown_dislikes, unknown_likes
 from llm import ConfigError, create_client, fallback_models
 from tools import ALLERGENS, DIETS, MenuRequest, MenuTools
@@ -33,17 +33,54 @@ WELCOME = """היי! אני אג'נט שמתכנן תפריט לארוחה 🍽�
 אני אגיד לך איך הבנתי, ואחרי שתאשרי - אתכנן תפריט שעומד בתקציב, עם רשימת קניות ומתכונים."""
 
 st.set_page_config(page_title="מתכנן תפריט", page_icon="🍽️")
+mark_page_hebrew()  # אחרת הדפדפן "מתרגם" את העברית ומשבש אותה
 st.markdown("""<style>
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&display=swap');
+html, body, .stApp, button, textarea, input { font-family: 'Heebo', 'Segoe UI', Arial, sans-serif !important; }
 .stApp, [data-testid="stSidebar"] { direction: rtl; }
 [data-testid="stChatMessage"], [data-testid="stChatMessageContent"], [data-testid="stMarkdownContainer"],
-[data-testid="stChatInput"] textarea, [data-testid="stExpander"], [data-testid="stCaptionContainer"],
-[data-testid="stAlert"], [data-testid="stSidebar"] button { direction: rtl; text-align: right; }
+[data-testid="stChatInput"] textarea, [data-testid="stCaptionContainer"], [data-testid="stAlert"],
+[data-testid="stSidebar"] button, [data-testid="stSidebar"] label { direction: rtl; text-align: right; }
 [data-testid="stMarkdownContainer"] ul, [data-testid="stMarkdownContainer"] ol { padding-right: 1.2em; padding-left: 0; }
 [data-testid="stMarkdownContainer"] li, [data-testid="stMarkdownContainer"] p,
 [data-testid="stMarkdownContainer"] h3 { direction: rtl; text-align: right; }
-[data-testid="stMarkdownContainer"] blockquote { border-right: 3px solid #ccc; border-left: none;
-  padding-right: 1em; padding-left: 0; }
+[data-testid="stMarkdownContainer"] blockquote { border-right: 3px solid #F3C9A8; border-left: none;
+  padding-right: 1em; padding-left: 0; color: #6b5b50; }
 code { direction: ltr; unicode-bidi: embed; }
+
+/* בועות */
+[data-testid="stChatMessage"] { background: #ffffff; border-radius: 16px; padding: 0.9rem 1.1rem;
+  box-shadow: 0 1px 4px rgba(120, 70, 30, 0.08); margin-bottom: 0.7rem; }
+[data-testid="stChatMessage"]:has(.user-msg) { background: #FFE9DA; box-shadow: none; }
+
+/* כותרת */
+.app-title { text-align: center; margin: 0.2rem 0 1.2rem; }
+.app-title h1 { font-size: 1.9rem; margin: 0; color: #2B2B2B; }
+.app-title p { color: #8A6A55; margin: 0.2rem 0 0; }
+
+/* כרטיס התפריט */
+.menu-card { border: 1px solid #F3D9C4; border-radius: 14px; padding: 14px 16px; background: #FFFDFB; }
+.menu-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.menu-title { font-weight: 700; font-size: 1.15rem; }
+.price { background: #E8590C; color: #fff; border-radius: 999px; padding: 2px 14px; font-weight: 700; }
+.menu-sub { color: #8A6A55; font-size: 0.9rem; margin: 4px 0 8px; }
+.menu-row { display: flex; gap: 12px; padding: 7px 0; border-bottom: 1px dashed #F1E1D3; }
+.menu-row:last-of-type { border-bottom: none; }
+.menu-row .label { min-width: 92px; color: #A0522D; font-weight: 600; }
+.prefs { margin-top: 10px; padding-top: 8px; border-top: 1px solid #F3D9C4; }
+.pref { margin: 5px 0; }
+.pref .why { display: block; color: #7d7d7d; font-size: 0.88rem; margin-right: 1.7em; }
+
+/* חלונות מתקפלים (details של הדפדפן) */
+details.box { margin-top: 10px; border: 1px solid #F0E2D6; border-radius: 12px; padding: 6px 12px; background: #FFFAF5; }
+details.box summary { cursor: pointer; font-weight: 600; color: #8A4B22; padding: 2px 0; }
+details.box[open] summary { margin-bottom: 6px; }
+table.shop { width: 100%; border-collapse: collapse; }
+table.shop th { color: #8A6A55; font-weight: 500; font-size: 0.9rem; }
+table.shop td, table.shop th { text-align: right; padding: 5px 6px; border-bottom: 1px solid #F3E7DC; }
+ul.steps { margin: 0; padding-right: 1.2em; font-size: 0.9rem; color: #555; }
+ul.steps li { margin: 3px 0; }
+.hint { margin-top: 10px; color: #6b5b50; font-size: 0.93rem; }
 </style>""", unsafe_allow_html=True)
 
 
@@ -58,6 +95,7 @@ def reset():
     st.session_state.model = None        # המודל שעבד - אם היה מעבר לגיבוי, ממשיכים איתו
     st.session_state.menu = None         # התפריט האחרון שאושר, עם הבקשה שלו - בשביל מתכונים
     st.session_state.previous_menu = None  # נקודת התחלה לתכנון הבא
+    st.session_state.kosher = False      # הגדרה: ארוחה כשרה (בלי בשר וחלב יחד)
 
 
 def load(conversation_id: str):
@@ -68,6 +106,7 @@ def load(conversation_id: str):
     st.session_state.conversation_id = conversation_id
     for key in STATE_KEYS:
         setattr(st.session_state, key, data.get(key))
+    st.session_state.kosher = bool(data.get("kosher"))  # שיחות מלפני שהיה מתג כשרות
 
 
 def persist():
@@ -90,19 +129,19 @@ def say(content: str, **extra):
     render_message(message)
 
 
+AVATARS = {"assistant": "🍽️", "user": "🙂"}
+
+
 def render_message(message: dict):
-    with st.chat_message(message["role"]):
-        if message.get("events"):
-            with st.expander(f"🔍 איך הגעתי לזה ({message['steps']} צעדים)"):
-                for line in message["events"]:
-                    st.markdown(line)
-        st.markdown(message["content"])
+    with st.chat_message(message["role"], avatar=AVATARS[message["role"]]):
+        if message["role"] == "user":
+            st.markdown(user_html(message["content"]), unsafe_allow_html=True)  # escape - הטקסט של המשתמשת
+            return
+        st.markdown(message["content"], unsafe_allow_html=message.get("html", False))
         if message.get("shopping_list"):
-            with st.expander("🛒 רשימת קניות"):
-                st.dataframe(pd.DataFrame([{
-                    "מוצר": i["item"], "צריך": f"{i['needed']:g} {i['unit']}",
-                    "לקנות": f"{i['packages']} × {i['package_size']:g} {i['unit']}"} for i in message["shopping_list"]]),
-                    hide_index=True, width="stretch")
+            st.markdown(shopping_html(message["shopping_list"]), unsafe_allow_html=True)
+        if message.get("events"):
+            st.markdown(steps_html(message["events"], message["steps"]), unsafe_allow_html=True)
 
 
 # ---------- הבנת הבקשה ----------
@@ -113,6 +152,8 @@ def describe_goal(goal) -> str:
     if request.target_budget is not None:
         budget = f"תקציב בערך {request.target_budget:g} ש\"ח (עד {request.budget:g} אם אין ברירה)"
     lines = [f"**{request.num_guests} סועדים, {budget}**"]
+    if request.kosher or st.session_state.kosher:
+        lines.append("🕍 ארוחה כשרה - בלי בשר וחלב יחד")
     for g in request.guests:
         parts = [f"אלרגיה ל{', '.join(ALLERGENS[a] for a in g.allergies)}" if g.allergies else "",
                  DIETS[g.diet] if g.diet else "",
@@ -196,10 +237,13 @@ def event_line(kind: str, data: dict) -> str | None:
 
 
 def plan():
-    request = MenuRequest.from_dict(st.session_state.goal.request)
+    # כשרות: מהבקשה עצמה ("ארוחה כשרה"), או מההגדרה בסרגל הצד
+    request_data = dict(st.session_state.goal.request,
+                        kosher=bool(st.session_state.goal.request.get("kosher") or st.session_state.kosher))
+    request = MenuRequest.from_dict(request_data)
     tools = MenuTools(request)
     lines: list[str] = []
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=AVATARS["assistant"]):
         status = st.status("מתכנן את התפריט...", expanded=True)
 
         def on_event(kind, data):
@@ -222,44 +266,15 @@ def plan():
     st.session_state.stage = "done"
     if success:
         approved = tools.approved_menu
-        st.session_state.menu = {"approved": approved, "request": st.session_state.goal.request}
+        st.session_state.menu = {"approved": approved, "request": request_data}
         st.session_state.previous_menu = {"menu": approved["menu"], "total_cost": approved["total_cost"]}
-        say(menu_answer(approved, request), events=lines, steps=agent.steps_used,
-            shopping_list=approved["shopping_list"])
+        say(menu_card_html(approved, request_data, unknown_likes(request_data)) + NEXT_STEPS, html=True,
+            events=lines, steps=agent.steps_used, shopping_list=approved["shopping_list"])
     else:
         if agent.best_cost:  # בפעם הבאה (למשל אחרי שהתקציב עלה) - מתחילים מהתפריט הזול ביותר שנמצא
             st.session_state.previous_menu = {"menu": agent.best_cost["menu"],
                                               "total_cost": agent.best_cost["total_cost"]}
         say(failure_answer(agent), events=lines, steps=agent.steps_used)
-
-
-def menu_answer(approved: dict, request) -> str:
-    menu = approved["menu"]
-    cost = approved["total_cost"]
-    if request.target_budget is not None:
-        budget = (f"ביעד של {request.target_budget:g}" if cost <= request.target_budget
-                  else f"מעל היעד של {request.target_budget:g}, אבל בתוך ה-{request.budget:g}")
-    else:
-        budget = f"מתוך {request.budget:g}"
-    lines = [f"✅ **הנה התפריט** - {cost:.0f} ש\"ח {budget} ({approved['cost_per_guest']:.0f} ש\"ח לסועד)", "",
-             f"- 🍗 **עיקריות:** {menu['mains'][0]}, {menu['mains'][1]}",
-             f"- 🥔 **תוספת:** {menu['side']}",
-             f"- 🥗 **ירקות:** {menu['vegetable']}",
-             f"- 🍰 **קינוח:** {menu['dessert']}"]
-    likes = approved.get("likes", [])
-    if likes:
-        lines.append("")
-        for like in likes:
-            if like["in_menu"]:
-                where = f"יש ב{', '.join(like['dishes'])}"
-            elif like["likes"] in unknown_likes(st.session_state.goal.request):
-                where = "אין לי מתכון עם זה"
-            else:
-                where = "לא הצלחתי לשלב בתקציב ובאילוצים"
-            lines.append(f"{'❤️' if like['in_menu'] else '🤍'} {like['guest']} אוהב/ת {like['likes']} - {where}")
-    lines += ["", "📖 **רוצה מתכונים?** כתבי \"מתכונים\", או למשל \"מתכון לקינוח\".",
-              "אפשר גם לשנות משהו - למשל \"בלי סלמון\" או \"התקציב הוא בעצם 200\"."]
-    return "\n".join(lines)
 
 
 def failure_answer(agent) -> str:
@@ -278,28 +293,39 @@ def show_recipes(text: str):
     say("\n\n---\n\n".join(cards))
 
 
+NEXT_STEPS = ('<div class="hint">📖 <b>רוצה מתכונים?</b> כתבי "מתכונים", או למשל "מתכון לקינוח". '
+              'אפשר גם לשנות משהו - "בלי סלמון", "התקציב בעצם 200" - או לשאול "כמה זה יוצא לסועד?"</div>')
+
+
 # ---------- הדף ----------
 
+def delete(conversation_id: str):
+    delete_conversation(conversation_id)
+    if conversation_id == st.session_state.conversation_id:
+        reset()
+
+
+# הכפתורים פועלים דרך on_click: הוא רץ לפני שהדף מצויר, ולכן מותר לו לשנות גם את מתג הכשרות
 with st.sidebar:
     st.header("🍽️ מתכנן תפריט")
-    if st.button("➕ שיחה חדשה", width="stretch"):
-        reset()
-        st.rerun()
+    st.button("➕ שיחה חדשה", width="stretch", on_click=reset)
+    st.toggle("🕍 ארוחה כשרה", key="kosher", on_change=persist,
+              help="בלי מנה בשרית ומנה חלבית באותה ארוחה. פרווה ודגים - מותר עם הכל")
     conversations = list_conversations()
     if conversations:
         st.caption("שיחות קודמות")
     for conversation in conversations:
         current = conversation["id"] == st.session_state.conversation_id
         open_col, delete_col = st.columns([5, 1])
-        if open_col.button(conversation["title"], key=f"open_{conversation['id']}", width="stretch",
-                           type="primary" if current else "secondary", help=conversation["updated"].replace("T", " ")):
-            load(conversation["id"])
-            st.rerun()
-        if delete_col.button("🗑", key=f"delete_{conversation['id']}", help="מחיקת השיחה"):
-            delete_conversation(conversation["id"])
-            if current:
-                reset()
-            st.rerun()
+        open_col.button(conversation["title"], key=f"open_{conversation['id']}", width="stretch",
+                        type="primary" if current else "secondary", help=conversation["updated"].replace("T", " "),
+                        on_click=load, args=(conversation["id"],))
+        delete_col.button("🗑", key=f"delete_{conversation['id']}", help="מחיקת השיחה",
+                          on_click=delete, args=(conversation["id"],))
+
+st.markdown('<div class="app-title"><h1>🍽️ מתכנן תפריט</h1>'
+            '<p>מי מגיע, מה התקציב ומה כל אחד אוכל - ואני אתכנן ארוחה שמתאימה לכולם</p></div>',
+            unsafe_allow_html=True)
 
 for message in st.session_state.messages:
     render_message(message)

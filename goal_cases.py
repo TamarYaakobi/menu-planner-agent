@@ -45,7 +45,7 @@ GOAL_CASES = [
     {"text": "10 סועדים, 250 ש\"ח. שירה אוכלת דגים אבל לא בשר",
      "expect": {"status": "ok", "num_guests": 10, "budget": 250, "profiles": [((), "vegetarian")]}},
     {"text": "ארוחה כשרה ל-10 אנשים ב-300 שקל",
-     "expect": {"status": "ok", "num_guests": 10, "budget": 300, "profiles": [], "unsupported": ["כשר"]}},
+     "expect": {"status": "ok", "num_guests": 10, "budget": 300, "profiles": [], "kosher": True}},
     {"text": "5 איש, 100 שקל, דנה אלרגית לשומשום ולביצים",
      "expect": {"status": "ok", "num_guests": 5, "budget": 100, "profiles": [(("eggs", "sesame"), None)]}},
     {"text": "אני, בעלי ושלושת הילדים. 150 שקל.",
@@ -108,6 +108,8 @@ def check_goal(expect: dict, result) -> list[str]:
         problems.append(f"סועדים: {request['num_guests']} במקום {expect['num_guests']}")
     if abs(request["budget"] - expect["budget"]) > 0.01:
         problems.append(f"תקציב: {request['budget']} במקום {expect['budget']}")
+    if "kosher" in expect and bool(request.get("kosher")) != expect["kosher"]:
+        problems.append(f"כשרות: {bool(request.get('kosher'))} במקום {expect['kosher']}")
     if "target" in expect and request.get("target_budget") != expect["target"]:
         problems.append(f"יעד תקציב: {request.get('target_budget')} במקום {expect['target']}")
 
@@ -147,6 +149,9 @@ UPDATE_CASES = [
      "expect": {"status": "ok", "num_guests": 4, "budget": 300, "profiles": [], "likes": ["חסה"]}},
     {"previous": _BASE, "text": "סבתא לא מגיעה",
      "expect": {"status": "ok", "num_guests": 3, "budget": 300, "profiles": [(("dairy",), None)], "likes": ["חסה"]}},
+    {"previous": _BASE, "text": "ושהארוחה תהיה כשרה",
+     "expect": {"status": "ok", "num_guests": 4, "budget": 300, "kosher": True, "profiles": [(("dairy",), None)],
+                "likes": ["חסה"], "dislikes": ["פטריות"]}},
     {"previous": _BASE, "text": "התקציב בערך 400",
      "expect": {"status": "ok", "num_guests": 4, "budget": 450, "target": 400, "profiles": [(("dairy",), None)],
                 "likes": ["חסה"], "dislikes": ["פטריות"]}},

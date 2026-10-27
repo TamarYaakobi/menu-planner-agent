@@ -11,12 +11,51 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from chat_logic import (cost_answer, delete_conversation, format_amount, format_recipe,  # noqa: E402
                         is_cost_question, is_thanks, is_yes, list_conversations, load_conversation,
-                        requested_dishes, save_conversation, wants_recipes)
+                        menu_card_html, requested_dishes, save_conversation, shopping_line, wants_recipes)
 from goal_parser import ParsedGoal  # noqa: E402
 from tools import DATA_DIR, MenuRequest, MenuTools, load_json  # noqa: E402
 
 MENU = {"mains": ["שניצל עוף", "קארי עדשים בחלב קוקוס"], "side": "מג'דרה",
         "vegetable": "סלט ירקות קצוץ", "dessert": "סלט פירות"}
+
+
+class TestHtml(unittest.TestCase):
+    """הכרטיסים ב-HTML: מה שהמשתמשת כתבה עובר escape, ורשימת הקניות כתובה בעברית טבעית."""
+
+    def test_user_text_cannot_inject_html(self):
+        from chat_logic import user_html
+        self.assertNotIn("<script>", user_html("<script>alert(1)</script>"))
+        approved = {"menu": MENU, "total_cost": 100, "cost_per_guest": 10, "shopping_list": [],
+                    "likes": [{"guest": "<b>דנה</b>", "likes": "חסה", "in_menu": False, "dishes": [], "reason": "<i>x</i>"}],
+                    "compromises": []}
+        card = menu_card_html(approved, {"budget": 200}, [])
+        self.assertNotIn("<b>דנה</b>", card)
+        self.assertIn("&lt;b&gt;דנה&lt;/b&gt;", card)
+
+    def test_card_shows_reasons_and_kosher(self):
+        approved = {"menu": MENU, "total_cost": 143.2, "cost_per_guest": 17.9, "shopping_list": [],
+                    "likes": [{"guest": "שירה", "likes": "אגוזי מלך", "in_menu": False, "dishes": [],
+                               "reason": "סלט חסה עם אגוזי מלך מכילה אגוזים (דנה)"},
+                              {"guest": "אמא", "likes": "ארטישוק", "in_menu": False, "dishes": [], "reason": "x"}],
+                    "compromises": [{"guest": "מירב", "dislikes": "עגבניות", "dish": "סלט ירקות קצוץ", "reason": "y"}]}
+        card = menu_card_html(approved, {"budget": 200, "kosher": True}, ["ארטישוק"])
+        self.assertIn("מכילה אגוזים (דנה)", card)
+        self.assertIn("אין לי מתכון עם זה", card)
+        self.assertIn("מירב לא אוהב/ת עגבניות", card)
+        self.assertIn("🕍 כשר", card)
+
+    def test_shopping_lines_read_naturally(self):
+        cases = [({"item": "אבקת קארי", "needed": 14.4, "unit": "גרם", "packages": 1, "package_size": 100},
+                  ("14 גרם", "אריזה אחת של 100 גרם")),
+                 ({"item": "חלב קוקוס", "needed": 480, "unit": 'מ"ל', "packages": 2, "package_size": 400},
+                  ('480 מ"ל', '2 אריזות של 400 מ"ל')),
+                 ({"item": "לימון", "needed": 1.6, "unit": "יח'", "packages": 2, "package_size": 1},
+                  ("2 יח'", "2 יח'")),
+                 ({"item": "שוקי עוף", "needed": 1440, "unit": "גרם", "packages": 2, "package_size": 1000},
+                  ('1.4 ק"ג', '2 אריזות של 1 ק"ג'))]
+        for item, expected in cases:
+            with self.subTest(item["item"]):
+                self.assertEqual(shopping_line(item), expected)
 
 
 class TestYesAndThanks(unittest.TestCase):

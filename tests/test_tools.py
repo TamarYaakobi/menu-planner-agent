@@ -93,7 +93,7 @@ class TestSearchRecipes(unittest.TestCase):
         self.assertIn("error", self.tools.search_recipes("main", exclude_allergens=["פיצה"]))
 
     def test_no_results_has_note(self):
-        result = self.tools.search_recipes("main", diet="vegan", exclude_ingredients=["עדשים"])
+        result = self.tools.search_recipes("main", diet="vegan", exclude_ingredients=["עדשים", "עגבניות"])
         self.assertEqual(result["count"], 0)
         self.assertIn("note", result)
 
@@ -212,6 +212,93 @@ class TestSuggestSwaps(unittest.TestCase):
         menu = {k: (list(v) if isinstance(v, list) else v) for k, v in VALID_MENU.items()}
         make_tools().suggest_swaps(menu)
         self.assertEqual(menu, VALID_MENU)
+
+
+class TestKosher(unittest.TestCase):
+    MEAT_AND_DAIRY = dict(VALID_MENU, dessert="עוגת גבינה")  # עוף בתנור (בשרי) + עוגת גבינה (חלבי)
+
+    def kosher_tools(self, **request):
+        return MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": 1000, "kosher": True, **request}))
+
+    def test_meat_and_dairy_together_is_a_hard_violation(self):
+        result = self.kosher_tools().check_guests(self.MEAT_AND_DAIRY)
+        self.assertFalse(result["all_satisfied"])
+        self.assertEqual(result["violations"][0]["guest"], "כשרות")
+        self.assertIn("עוגת גבינה", result["violations"][0]["problem"])
+
+    def test_only_when_requested(self):
+        self.assertTrue(make_tools().check_guests(self.MEAT_AND_DAIRY)["all_satisfied"])
+
+    def test_fish_and_parve_go_with_everything(self):
+        menu = dict(VALID_MENU, mains=["פילה אמנון ברוטב עגבניות", "קארי עדשים בחלב קוקוס"], dessert="עוגת גבינה")
+        self.assertTrue(self.kosher_tools().check_guests(menu)["all_satisfied"])
+
+    def test_search_shows_kashrut(self):
+        found = {r["name"]: r["kashrut"] for r in make_tools().search_recipes("dessert")["recipes"]}
+        self.assertEqual((found["עוגת גבינה"], found["סלט פירות"]), ("dairy", "parve"))
+
+    def test_swaps_and_finalize_respect_kosher(self):
+        tools = self.kosher_tools()
+        self.assertFalse(tools.finalize_menu(self.MEAT_AND_DAIRY)["approved"])
+        swaps = tools.suggest_swaps(self.MEAT_AND_DAIRY)
+        for slot in swaps["suggestions"]:
+            for option in slot["options"]:
+                self.assertTrue(tools.check_guests(_swap(self.MEAT_AND_DAIRY, slot["replace"], option["dish"]))
+                                ["all_satisfied"])
+
+    def test_invalid_flag(self):
+        with self.assertRaises(ValueError):
+            MenuRequest.from_dict({"num_guests": 5, "budget": 100, "kosher": "כן"})
+
+
+def _swap(menu, old, new):
+    swapped = dict(menu, mains=[new if m == old else m for m in menu["mains"]])
+    for key in ("side", "vegetable", "dessert"):
+        if menu[key] == old:
+            swapped[key] = new
+    return swapped
+
+
+class TestPreferenceReasons(unittest.TestCase):
+    """למה העדפה לא מומשה - נבדק בקוד, לא מנוחש."""
+
+    def report(self, guests, menu=VALID_MENU, budget=1000, **request):
+        tools = MenuTools(MenuRequest.from_dict({"num_guests": 8, "budget": budget, "guests": guests, **request}))
+        return tools.preferences_report(menu)
+
+    def like_reason(self, guests, **kwargs):
+        return next(x for x in self.report(guests, **kwargs)["likes"] if not x["in_menu"])["reason"]
+
+    def test_blocked_by_someone_elses_allergy(self):
+        reason = self.like_reason([{"name": "דנה", "allergies": ["nuts"]}, {"name": "שירה", "likes": ["אגוזי מלך"]}])
+        self.assertIn("מכילה אגוזים (דנה)", reason)
+
+    def test_not_in_database(self):
+        self.assertIn("אין במאגר", self.like_reason([{"name": "שירה", "likes": ["ארטישוק"]}]))
+
+    def test_over_budget(self):
+        cost = make_tools(num_guests=8).calculate_cost(VALID_MENU)["total_cost"]
+        reason = self.like_reason([{"name": "גיל", "likes": ["סלמון"]}], budget=cost + 1)
+        self.assertIn("מעל התקציב", reason)
+
+    def test_kosher_conflict(self):
+        reason = self.like_reason([{"name": "שירה", "likes": ["עוגת גבינה"]}], kosher=True)
+        self.assertIn("מנה חלבית, ובתפריט יש מנה בשרית", reason)
+
+    def test_honest_when_it_was_possible(self):
+        self.assertIn("אפשר היה", self.like_reason([{"name": "שירה", "likes": ["שקשוקה"]}]))
+
+    def test_compromise_on_a_dislike_is_explained(self):
+        report = self.report([{"name": "מירב", "dislikes": ["עגבניות"]}])  # בסלט הקצוץ יש עגבניות
+        self.assertEqual(report["compromises"][0]["dish"], "סלט ירקות קצוץ")
+        self.assertTrue(report["compromises"][0]["reason"])
+
+    def test_finalize_includes_reasons(self):
+        tools = MenuTools(MenuRequest.from_dict({"num_guests": 8, "budget": 1000,
+                                                 "guests": [{"name": "שירה", "likes": ["ארטישוק"]}]}))
+        result = tools.finalize_menu(VALID_MENU)
+        self.assertIn("reason", result["likes"][0])
+        self.assertIn("compromises", result)
 
 
 class TestTargetBudget(unittest.TestCase):
