@@ -165,6 +165,55 @@ class TestCheckGuests(unittest.TestCase):
         self.assertEqual(tools.check_guests(two)["violations"][0]["type"], "soft")
 
 
+class TestSuggestSwaps(unittest.TestCase):
+
+    def test_every_option_is_valid_and_sorted(self):
+        guests = [{"name": "יוסי", "diet": "vegetarian"}, {"name": "דנה", "allergies": ["nuts"]}]
+        tools = make_tools(guests=guests)
+        result = tools.suggest_swaps(VALID_MENU)
+        self.assertEqual(len(result["suggestions"]), 5)
+        for slot in result["suggestions"]:
+            totals = [o["new_total"] for o in slot["options"]]
+            self.assertEqual(totals, sorted(totals))
+            for option in slot["options"]:
+                self.assertNotEqual(option["dish"], slot["replace"])
+                self.assertNotIn(option["dish"], VALID_MENU["mains"])  # בלי עיקרית כפולה
+                self.assertNotIn("אגוז", option["dish"])                # דנה אלרגית
+                self.assertNotEqual(option["dish"], "ריזוטו כמהין")     # אין לו מחיר מלא
+
+    def test_best_swap_really_saves(self):
+        tools = make_tools()
+        result = tools.suggest_swaps(VALID_MENU)
+        best = result["best_swap"]
+        current = tools.calculate_cost(VALID_MENU)["total_cost"]
+        self.assertAlmostEqual(current - best["saving"], best["new_total"])
+        self.assertGreater(best["saving"], 0)
+
+    def test_offers_fix_for_guest_violation(self):
+        # שתי עיקריות בשריות - ליוסי אין מה לאכול. ההצעות צריכות לכלול עיקרית צמחונית
+        tools = make_tools(guests=[{"name": "יוסי", "diet": "vegetarian"}])
+        menu = dict(VALID_MENU, mains=["עוף בתנור עם תפוחי אדמה", "שניצל עוף"])
+        main_options = [o["dish"] for s in tools.suggest_swaps(menu)["suggestions"]
+                        if s["category"] == "main" for o in s["options"]]
+        self.assertTrue(main_options)
+        for dish in main_options:
+            self.assertIn("vegetarian", tools.recipes[dish]["diet"])
+
+    def test_cheapest_menu_has_no_cheaper_swap(self):
+        # התפריט התקין הזול ביותר (לפי השופט) - אין החלפה שמוזילה אותו
+        from evaluate import find_best_menu
+        tools = make_tools(budget=50, guests=[{"name": "יוסי", "diet": "vegan"}])
+        best_menu = find_best_menu(tools)["best"]["menu"]
+        result = tools.suggest_swaps(best_menu)
+        self.assertNotIn("best_swap", result)
+        self.assertIn("note", result)
+
+    def test_does_not_modify_the_menu(self):
+        menu = {k: (list(v) if isinstance(v, list) else v) for k, v in VALID_MENU.items()}
+        make_tools().suggest_swaps(menu)
+        self.assertEqual(menu, VALID_MENU)
+
+
 class TestFinalizeMenu(unittest.TestCase):
 
     def test_approves_valid_menu_with_shopping_list(self):

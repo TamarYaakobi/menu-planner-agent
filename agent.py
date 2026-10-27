@@ -45,12 +45,17 @@ SYSTEM_PROMPT = """אתה אג'נט שמתכנן תפריט לארוחה משפ�
 
 איך לעבוד:
 - אתה מחליט באיזה סדר להשתמש בכלים ומה לבדוק.
+- מספר הצעדים מוגבל. בצעד אחד אפשר להפעיל כמה כלים במקביל - למשל לחפש בכל הקטגוריות בבת אחת.
 - אל תחשב מחירים ואל תבדוק אילוצים בעצמך - בשביל זה יש כלים, והם מדויקים.
 - לפני כל קריאה לכלי, כתוב משפט קצר אחד: מה אתה עושה ולמה.
 - אם כלי מחזיר בעיה (חריגה מתקציב, הפרת אילוץ, מחיר חסר, שגיאה) - שנה את התפריט בהתאם ובדוק שוב.
-  calculate_cost מחזיר את עלות כל מנה - השתמש בזה כדי להחליט מה כדאי להחליף.
+  suggest_swaps מראה לכל מנה אילו מנות אפשר לשים במקומה בלי לפגוע באורחים, ומה תהיה העלות אחרי ההחלפה -
+  השתמש בו כדי להחליט מה להחליף, במקום לנחש.
+  ההחלפות שהוא מציע כבר נבדקו מול כל האורחים, ו-new_total הוא העלות אחרי ההחלפה - אין צורך לבדוק אותן שוב.
+  החלפות בתוספת, בירקות ובקינוח לא משפיעות זו על זו, אז אפשר לבצע כמה מהן יחד ולבדוק פעם אחת.
 - המשימה מסתיימת בהצלחה רק כש-finalize_menu מחזיר approved=true.
-- אם אחרי שבדקת חלופות זולות השתכנעת שאין תפריט שעומד בכל הכללים, קרא ל-report_failure עם הסבר.
+- report_failure רק אחרי ש-suggest_swaps הראה שאין עוד החלפה שמוזילה את התפריט, ועדיין אין פתרון.
+  במקרה כזה, ציין בהסבר את התפריט הזול ביותר שהגעת אליו ואת העלות שלו.
 """
 
 _MENU_SCHEMA = {
@@ -96,6 +101,12 @@ TOOL_SCHEMAS = [
           "בודק את התפריט מול האילוצים וההעדפות של כל האורחים. מחזיר רשימת הפרות "
           "(type=hard לאילוץ חובה, type=soft להעדפה).",
           {"menu": _MENU_SCHEMA}, ["menu"]),
+    _tool("suggest_swaps",
+          "לכל מנה בתפריט: עד 3 מנות מאותה קטגוריה שאפשר לשים במקומה כך שהתפריט יתאים לכל האורחים, "
+          "ממוינות מהזולה, עם העלות החדשה והחיסכון. מחזיר גם את ההחלפה המשתלמת ביותר (best_swap). "
+          "אם אין החלפה בודדת שמוזילה - מחזיר החלפה של שתי מנות יחד (best_double_swap), או הודעה שאין. "
+          "מתאים כשחורגים מהתקציב או כשיש הפרה של אילוץ.",
+          {"menu": _MENU_SCHEMA}, ["menu"]),
     _tool("finalize_menu",
           "מאשר את התפריט הסופי. בודק מחדש תקציב, מחירים ואורחים, ואם הכל תקין מחזיר approved=true "
           "ורשימת קניות. אם לא - מחזיר approved=false עם הסיבות.",
@@ -107,7 +118,7 @@ TOOL_SCHEMAS = [
 ]
 
 # רק הכלים האלה מותר להפעיל ב-MenuTools - המודל לא יכול לקרוא לשום מתודה אחרת
-MENU_TOOLS = {"search_recipes", "calculate_cost", "check_guests", "finalize_menu"}
+MENU_TOOLS = {"search_recipes", "calculate_cost", "check_guests", "suggest_swaps", "finalize_menu"}
 
 
 def describe_request(request: MenuRequest) -> str:
@@ -143,7 +154,7 @@ class MenuAgent:
         self.on_event = on_event or print_event
         self.steps_used = 0
         self.failure_reason: str | None = None
-        self.best_cost: dict | None = None  # התפריט הזול ביותר שנבדק - לדיווח אם נכשלים
+        self.best_cost: dict | None = None  # התפריט התקין הזול ביותר שנבדק - לבדיקת ויתור ולדיווח
 
     def _emit(self, kind: str, **data):
         self.on_event(kind, data)
@@ -152,7 +163,8 @@ class MenuAgent:
         """מריץ את הלולאה. מחזיר True אם התפריט אושר."""
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": describe_request(self.tools.request)},
+            {"role": "user", "content": describe_request(self.tools.request)
+             + f"\nיש לך עד {self.max_steps} צעדים."},
         ]
         nudges = 0
 
@@ -225,8 +237,7 @@ class MenuAgent:
             return result
 
         if name == "report_failure":
-            self.failure_reason = args.get("reason") or "המודל לא פירט סיבה"
-            result = {"ok": True}
+            result = self._check_give_up(args)
         elif name not in MENU_TOOLS:
             result = {"error": f"אין כלי בשם '{name}'"}
         else:
@@ -235,11 +246,43 @@ class MenuAgent:
             except TypeError as e:  # פרמטר חסר או מיותר
                 result = {"error": f"פרמטרים שגויים לכלי {name}: {e}"}
 
+        # שני כלים מחשבים מחיר של תפריט שלם - שניהם נספרים כ"תפריט שנבדק"
         if name == "calculate_cost" and result.get("complete"):
-            if self.best_cost is None or result["total_cost"] < self.best_cost["total_cost"]:
-                self.best_cost = {"menu": args.get("menu"), **result}
+            self._track_best(args["menu"], result["total_cost"])
+        elif name == "suggest_swaps" and result.get("current_complete"):
+            self._track_best(args["menu"], result["current_total"])
         self._emit("tool", name=name, args=args, result=result)
         return result
+
+    def _track_best(self, menu: dict, total: float):
+        """שומר את התפריט הזול ביותר שנבדק - רק אם הוא מתאים לכל האורחים."""
+        if self.best_cost and total >= self.best_cost["total_cost"]:
+            return
+        if self.tools.check_guests(menu).get("all_satisfied"):
+            self.best_cost = {"menu": menu, "total_cost": total, "budget": self.tools.request.budget}
+
+    def _check_give_up(self, args: dict) -> dict:
+        """
+        המודל רוצה לוותר. כמו שהצלחה נבדקת בקוד (finalize_menu), גם ויתור נבדק:
+        אם לתפריט הזול ביותר שנבדק יש עוד החלפה שמוזילה אותו - הוויתור נדחה.
+        """
+        if self.best_cost:
+            swaps = self.tools.suggest_swaps(self.best_cost["menu"])
+            swap = swaps.get("best_swap") or swaps.get("best_double_swap")
+            if swap:
+                return {"error": f"עוד לא מוצו האפשרויות: בתפריט הזול ביותר שבדקת "
+                                 f"({self.best_cost['total_cost']:.0f} ש\"ח) אפשר {describe_swap(swap)} "
+                                 f"ולרדת ל-{swap['new_total']:.0f} ש\"ח. נסה את זה לפני שאתה מוותר."}
+        self.failure_reason = args.get("reason") or "המודל לא פירט סיבה"
+        return {"ok": True}
+
+
+def describe_swap(swap: dict) -> str:
+    """'להחליף את X ב-Y' - להחלפה בודדת או כפולה."""
+    if isinstance(swap["replace"], str):
+        return f"להחליף את '{swap['replace']}' ב-'{swap['with']}'"
+    pairs = [f"'{old}' ב-'{new}'" for old, new in zip(swap["replace"], swap["with"])]
+    return "להחליף יחד את " + " ואת ".join(pairs)
 
 
 def _retry_delay(error: RateLimitError) -> float | None:
@@ -276,6 +319,11 @@ def summarize(name: str, r: dict) -> str:
         if r["all_satisfied"]:
             return "✓ כל האורחים מסודרים"
         return "✗ " + "".join(f"\n     - [{v['type']}] {v['guest']}: {v['problem']}" for v in r["violations"])
+    if name == "suggest_swaps":
+        swap = r.get("best_swap") or r.get("best_double_swap")
+        if swap:
+            return f"הכי משתלם: {describe_swap(swap)} (חוסך {swap['saving']:.0f} ש\"ח → {swap['new_total']:.0f})"
+        return "אין החלפה שמוזילה את התפריט"
     if name == "finalize_menu":
         if r["approved"]:
             return "✓ התפריט אושר"
@@ -321,12 +369,13 @@ def print_failure(reason: str, best_cost: dict | None):
     print("❌ לא הצלחתי להשלים את המשימה")
     print(f"\n  סיבה: {reason}")
     if best_cost:
-        print(f"\n  התפריט הזול ביותר שנבדק: {short_args(best_cost)}")
+        print(f"\n  התפריט התקין הזול ביותר שנבדק: {short_args(best_cost)}")
         print(f"  עלות: {best_cost['total_cost']:.2f} ש\"ח (תקציב: {best_cost['budget']:g})")
 
 
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")  # כדי שעברית ואימוג'י יודפסו נכון ב-Windows
+    sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="אג'נט לתכנון תפריט בתקציב")
     parser.add_argument("request", nargs="?", default=str(DEFAULT_REQUEST),
                         help="קובץ JSON עם האורחים והתקציב")

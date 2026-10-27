@@ -15,6 +15,7 @@ import difflib
 import json
 import math
 from dataclasses import dataclass, field
+from itertools import combinations, product
 from pathlib import Path
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -28,6 +29,8 @@ UNITS = {"g": "גרם", "ml": "מ\"ל", "unit": "יח'"}
 MAIN_PORTION_FACTOR = 0.6
 # כמה מנות שאינן עיקריות מותר שיהיו לאורח שהוא לא אוהב
 MAX_DISLIKED_NON_MAIN = 1
+# חמשת המקומות בתפריט: (שדה, אינדקס ברשימה או None)
+MENU_SLOTS = (("mains", 0), ("mains", 1), ("side", None), ("vegetable", None), ("dessert", None))
 
 
 class DataError(Exception):
@@ -45,6 +48,14 @@ def load_json(path: Path):
 
 
 # ---------- המטרה: מי מגיע, מה התקציב, ומה כל אורח לא אוכל ----------
+
+def _string_list(guest: dict, key: str, name: str) -> list[str]:
+    """שדה שחייב להיות רשימת מחרוזות. מחרוזת בודדת ("nuts") הייתה מתפרשת אות אחרי אות."""
+    value = guest.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+        raise ValueError(f"{key} אצל {name} צריך להיות רשימה של מחרוזות, למשל [\"nuts\"]")
+    return list(value)
+
 
 @dataclass
 class Guest:
@@ -81,23 +92,30 @@ class MenuRequest:
         budget = data.get("budget")
         if not isinstance(num_guests, int) or isinstance(num_guests, bool) or num_guests < 1:
             raise ValueError("מספר האורחים חייב להיות מספר שלם וחיובי")
-        if not isinstance(budget, (int, float)) or isinstance(budget, bool) or budget <= 0:
+        # math.isfinite: JSON של Python מקבל גם Infinity ו-NaN
+        if (not isinstance(budget, (int, float)) or isinstance(budget, bool)
+                or not math.isfinite(budget) or budget <= 0):
             raise ValueError("התקציב חייב להיות מספר חיובי")
+        if not isinstance(data.get("guests", []), list):
+            raise ValueError("guests צריך להיות רשימה של אורחים")
 
         guests = []
         for g in data.get("guests", []):
             if not isinstance(g, dict):
                 raise ValueError(f"כל אורח צריך להיות אובייקט עם name, ולא: {g!r}")
             name = g.get("name")
-            if not name:
+            if not isinstance(name, str) or not name.strip():
                 raise ValueError("לכל אורח ברשימה צריך להיות שם")
-            bad = [a for a in g.get("allergies", []) if a not in ALLERGENS]
+            allergies = _string_list(g, "allergies", name)
+            bad = [a for a in allergies if a not in ALLERGENS]
             if bad:
                 raise ValueError(f"אלרגיה לא מוכרת אצל {name}: {bad}. אפשרויות: {list(ALLERGENS)}")
             diet = g.get("diet")
             if diet is not None and diet not in DIETS:
                 raise ValueError(f"תזונה לא מוכרת אצל {name}: '{diet}'. אפשרויות: {list(DIETS)}")
-            guests.append(Guest(name, list(g.get("allergies", [])), diet, list(g.get("dislikes", []))))
+            # העדפה ריקה הייתה "מתאימה" לכל מרכיב ("" in "עגבניות" == True), אז מסננים אותה
+            dislikes = [d.strip() for d in _string_list(g, "dislikes", name) if d.strip()]
+            guests.append(Guest(name.strip(), allergies, diet, dislikes))
 
         if len(guests) > num_guests:
             raise ValueError(f"ברשימה יש {len(guests)} אורחים, יותר ממספר האורחים ({num_guests})")
@@ -269,7 +287,93 @@ class MenuTools:
         }
         return {"approved": True, **self.approved_menu}
 
+    # --- כלי 5 ---
+    def suggest_swaps(self, menu: dict) -> dict:
+        """
+        לכל מנה בתפריט: אילו מנות מאותה קטגוריה אפשר לשים במקומה כך שהתפריט כולו
+        יהיה תקין לכל האורחים, וכמה יעלה התפריט אחרי ההחלפה - מהזול ליקר.
+        בלי הכלי הזה המודל מנחש מה להחליף, ומבזבז צעדים על ניסיונות שמייקרים או שוברים אילוץ.
+
+        אם אין החלפה בודדת שמוזילה, נבדקת גם החלפה של שתי מנות יחד: חלק מהכללים מקשרים
+        בין מנות (למשל "לכל היותר מנה אחת לא אהובה"), ואז רק שתי החלפות ביחד מוזילות בלי לשבור כלל.
+        """
+        dishes, errors = self._parse_menu(menu)
+        if errors:
+            return {"error": "התפריט לא תקין", "details": errors}
+
+        current = self.calculate_cost(menu)
+        alternatives = {slot: self._alternatives(menu, slot) for slot in MENU_SLOTS}
+        suggestions = []
+        for slot in MENU_SLOTS:
+            options = []
+            for dish in alternatives[slot]:
+                total = self._valid_total(self._replace(menu, *slot, dish))
+                if total is not None:
+                    options.append({"dish": dish, "new_total": total,
+                                    "saving": round(current["total_cost"] - total, 2)})
+            options.sort(key=lambda o: o["new_total"])
+            replaced = self._dish_at(menu, slot)
+            suggestions.append({"replace": replaced, "category": self.recipes[replaced]["category"],
+                                "options": options[:3]})
+
+        cheaper = [(o, s["replace"]) for s in suggestions for o in s["options"] if o["saving"] > 0]
+        result = {"current_total": current["total_cost"], "current_complete": current["complete"],
+                  "budget": self.request.budget, "suggestions": suggestions}
+        if cheaper:
+            best, replaced = max(cheaper, key=lambda pair: pair[0]["saving"])
+            result["best_swap"] = {"replace": replaced, "with": best["dish"],
+                                   "saving": best["saving"], "new_total": best["new_total"]}
+            return result
+
+        double = self._best_double_swap(menu, current["total_cost"], alternatives)
+        if double:
+            result["best_double_swap"] = double
+            result["note"] = "אין החלפה של מנה אחת שמוזילה, אבל החלפה של שתי מנות יחד כן."
+        else:
+            result["note"] = ("אין החלפה של מנה אחת או של שתי מנות שמוזילה את התפריט ושומרת על כל "
+                              "האורחים. כנראה שזה התפריט הזול ביותר שאפשר להגיע אליו מכאן.")
+        return result
+
     # ---------- פונקציות עזר פנימיות (לא חשופות למודל) ----------
+
+    def _best_double_swap(self, menu: dict, current_total: float, alternatives: dict) -> dict | None:
+        best = None
+        for slot_a, slot_b in combinations(MENU_SLOTS, 2):
+            for dish_a, dish_b in product(alternatives[slot_a], alternatives[slot_b]):
+                total = self._valid_total(self._replace(self._replace(menu, *slot_a, dish_a), *slot_b, dish_b))
+                saving = total is not None and round(current_total - total, 2)
+                if saving and saving > 0 and (best is None or total < best["new_total"]):
+                    best = {"replace": [self._dish_at(menu, slot_a), self._dish_at(menu, slot_b)],
+                            "with": [dish_a, dish_b], "saving": saving, "new_total": total}
+        return best
+
+    def _alternatives(self, menu: dict, slot: tuple) -> list[str]:
+        """מנות מאותה קטגוריה שאינן כבר בתפריט."""
+        category = self.recipes[self._dish_at(menu, slot)]["category"]
+        in_menu = set(menu["mains"]) | {menu["side"], menu["vegetable"], menu["dessert"]}
+        return [n for n, r in self.recipes.items() if r["category"] == category and n not in in_menu]
+
+    def _valid_total(self, menu: dict) -> float | None:
+        """העלות של תפריט אם הוא תקין לגמרי (מבנה, מחירים, אורחים), אחרת None."""
+        cost = self.calculate_cost(menu)
+        if "error" in cost or not cost["complete"] or not self.check_guests(menu)["all_satisfied"]:
+            return None
+        return cost["total_cost"]
+
+    @staticmethod
+    def _dish_at(menu: dict, slot: tuple) -> str:
+        field_name, index = slot
+        return menu[field_name] if index is None else menu[field_name][index]
+
+    @staticmethod
+    def _replace(menu: dict, field_name: str, index: int | None, dish: str) -> dict:
+        """עותק של התפריט עם מנה אחת מוחלפת. לא משנה את המקור."""
+        new_menu = dict(menu, mains=list(menu["mains"]))
+        if index is None:
+            new_menu[field_name] = dish
+        else:
+            new_menu["mains"][index] = dish
+        return new_menu
 
     def _servings(self, recipe: dict) -> float:
         factor = MAIN_PORTION_FACTOR if recipe["category"] == "main" else 1.0

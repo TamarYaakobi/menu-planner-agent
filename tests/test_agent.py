@@ -109,6 +109,51 @@ class TestStopConditions(unittest.TestCase):
         self.assertIn("נשארו לך רק 3 צעדים", client.requests[2][-1]["content"])
 
 
+class TestGivingUp(unittest.TestCase):
+    """ויתור נבדק בקוד, כמו הצלחה."""
+
+    def test_give_up_rejected_while_cheaper_swap_exists(self):
+        agent, _, events = make_agent(
+            reply(call("calculate_cost", {"menu": VALID_MENU})),   # יש לתפריט הזה החלפות זולות יותר
+            reply(call("report_failure", {"reason": "אין פתרון"})),
+            budget=10, max_steps=2)
+        self.assertFalse(agent.run())
+        give_up = [data["result"] for kind, data in events if kind == "tool" and data["name"] == "report_failure"]
+        self.assertIn("עוד לא מוצו", give_up[0]["error"])
+        self.assertNotEqual(agent.failure_reason, "אין פתרון")  # הוויתור לא התקבל
+
+    def test_give_up_accepted_at_cheapest_menu(self):
+        agent, _, _ = make_agent(budget=10, guests=[{"name": "יוסי", "diet": "vegan"}])
+        cheapest = find_best_menu(agent.tools)["best"]["menu"]
+        agent.client.replies = [reply(call("calculate_cost", {"menu": cheapest})),
+                                reply(call("report_failure", {"reason": "אין פתרון"}))]
+        self.assertFalse(agent.run())
+        self.assertEqual(agent.failure_reason, "אין פתרון")
+
+    def test_menus_checked_with_suggest_swaps_count(self):
+        # באג שנמצא בריצה אמיתית: האג'נט הגיע לתפריט הזול ביותר דרך suggest_swaps בלבד,
+        # והוויתור נדחה כי רק calculate_cost נספר
+        agent, _, _ = make_agent(budget=10, guests=[{"name": "יוסי", "diet": "vegan"}])
+        cheapest = find_best_menu(agent.tools)["best"]["menu"]
+        agent.client.replies = [reply(call("suggest_swaps", {"menu": cheapest})),
+                                reply(call("report_failure", {"reason": "אין פתרון"}))]
+        self.assertFalse(agent.run())
+        self.assertEqual(agent.failure_reason, "אין פתרון")
+
+    def test_cheap_menu_that_breaks_a_constraint_is_not_tracked(self):
+        agent, _, _ = make_agent(reply(call("calculate_cost", {"menu": dict(
+            VALID_MENU, side="אורז עם שקדים קלויים")})), guests=[{"name": "דנה", "allergies": ["nuts"]}],
+            max_steps=1)
+        agent.run()
+        self.assertIsNone(agent.best_cost)
+
+    def test_give_up_without_any_cost_check_is_accepted(self):
+        # למשל אילוצים סותרים - אין אף תפריט תקין לחשב לו מחיר
+        agent, _, _ = make_agent(reply(call("report_failure", {"reason": "סתירה"})))
+        self.assertFalse(agent.run())
+        self.assertEqual(agent.failure_reason, "סתירה")
+
+
 class TestBadToolCalls(unittest.TestCase):
     """טעויות של המודל חוזרות אליו כשגיאה - והריצה ממשיכה."""
 
@@ -142,7 +187,7 @@ class TestBookkeeping(unittest.TestCase):
         agent, _, _ = make_agent(
             reply(call("calculate_cost", {"menu": cheap}, "a"), call("calculate_cost", {"menu": expensive}, "b"),
                   call("calculate_cost", {"menu": missing_price}, "c")),
-            reply(call("report_failure", {"reason": "x"})), budget=10)
+            budget=10, max_steps=1)
         agent.run()
         self.assertEqual(agent.best_cost["menu"], cheap)
 
@@ -212,7 +257,7 @@ class TestUI(unittest.TestCase):
         app = AppTest.from_file(str(Path(__file__).parent.parent / "ui.py"), default_timeout=30).run()
         app.multiselect(key="sb_mains").set_value(VALID_MENU["mains"]).run()
         for button in app.button:
-            if button.label in ("calculate_cost", "check_guests", "finalize_menu"):
+            if button.label in ("calculate_cost", "check_guests", "suggest_swaps", "finalize_menu"):
                 button.click().run()
                 self.assertFalse(app.exception, app.exception)
 

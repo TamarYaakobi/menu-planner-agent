@@ -9,18 +9,16 @@
   3. תרחישי קצה: להריץ כמה תרחישים ברצף ולקבל טבלת ציונים.
 """
 import os
-import time
 
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-from openai import APIError, RateLimitError
 
-from agent import MAX_STEPS, SYSTEM_PROMPT, MenuAgent, describe_request, short_args, summarize
-from evaluate import find_best_menu, judge
-from llm import DEFAULT_MODEL, ConfigError, create_client
+from agent import MAX_STEPS, SYSTEM_PROMPT, describe_request, short_args, summarize
+from evaluate import VERDICT_ICON, find_best_menu, run_scenario
+from llm import DEFAULT_MODEL
 from scenarios import SCENARIOS
-from tools import ALLERGENS, CATEGORIES, DIETS, DataError, MenuRequest, MenuTools
+from tools import ALLERGENS, CATEGORIES, DIETS, MenuRequest, MenuTools
 
 st.set_page_config(page_title="בודק האג'נט", page_icon="🍽️", layout="wide")
 st.markdown("""<style>
@@ -31,7 +29,6 @@ textarea, pre, code, [data-testid="stJson"] { direction: ltr; text-align: left; 
 ALLERGEN_BY_HEBREW = {v: k for k, v in ALLERGENS.items()}
 DIET_BY_HEBREW = {v: k for k, v in DIETS.items()}
 SCENARIO_BY_ID = {s["id"]: s for s in SCENARIOS}
-VERDICT_ICON = {"pass": "✅", "partial": "⚠️", "fail": "❌", "bug": "🐞"}
 EXPECT_TEXT = {"success": "תפריט מאושר", "failure": "דיווח שאין פתרון", "invalid": "פסילת הקלט"}
 COLUMNS = ["שם", "אלרגיות", "תזונה", "לא אוהב/ת"]
 
@@ -116,53 +113,9 @@ def render_event(box, kind: str, data: dict):
 
 
 def run_agent(request_data: dict, model: str, max_steps: int, log) -> dict:
-    """מריץ את האג'נט, מציג כל צעד ב-log בזמן אמת, ומחזיר סיכום כולל פסק דין."""
-    events: list[tuple[str, dict]] = []
-
-    def on_event(kind, data):
-        events.append((kind, data))
-        render_event(log, kind, data)
-
-    result = {"events": events, "request": request_data, "verdict": None}
-    try:
-        tools = MenuTools(MenuRequest.from_dict(request_data))
-    except (ValueError, DataError) as e:
-        result.update(status="invalid", error=str(e),
-                      verdict=("pass", "הקלט נפסל לפני שהאג'נט רץ - בלי לבזבז קריאות למודל"))
-        return result
-
-    truth = find_best_menu(tools)
-    result["truth"] = truth
-    try:
-        client, default_model = create_client()
-    except ConfigError as e:
-        result.update(status="error", error=str(e))
-        return result
-
-    agent = MenuAgent(client, model or default_model, tools, max_steps=max_steps, on_event=on_event)
-    start = time.time()
-    try:
-        success = agent.run()
-    except RateLimitError:
-        success, error = None, "נגמרה מכסת הבקשות למודל. נסי מודל אחר בסרגל הצד, או נסי שוב מאוחר יותר."
-    except APIError as e:
-        success, error = None, f"שגיאה בתקשורת עם המודל ({type(e).__name__}): {e}"
-
-    tool_calls = sum(kind == "tool" for kind, _ in events)
-    result.update(duration=time.time() - start, steps=agent.steps_used, tool_calls=tool_calls)
-    if success is None:
-        result.update(status="error", error=error)
-        return result
-
-    approved = tools.approved_menu
-    if success:
-        agent_cost = approved["total_cost"]
-    else:
-        agent_cost = agent.best_cost and agent.best_cost["total_cost"]
-    result.update(status="success" if success else "failure", approved=approved,
-                  failure_reason=agent.failure_reason, best_cost=agent.best_cost,
-                  verdict=judge(success, agent_cost, truth))
-    return result
+    """מריץ את האג'נט ומציג כל צעד ב-log בזמן אמת."""
+    return run_scenario(request_data, model, max_steps,
+                        on_event=lambda kind, data: render_event(log, kind, data))
 
 
 def format_duration(seconds: float) -> str:
@@ -207,7 +160,7 @@ def show_result(r: dict):
         st.subheader("❌ האג'נט לא השלים את המשימה")
         st.write(f"**הסיבה שדווחה:** {r['failure_reason']}")
         if r["best_cost"]:
-            st.write(f"**התפריט הזול ביותר שבדק:** {short_args(r['best_cost'])} "
+            st.write(f"**התפריט התקין הזול ביותר שבדק:** {short_args(r['best_cost'])} "
                      f"({r['best_cost']['total_cost']:.0f} ש\"ח)")
 
     with st.expander("🔍 מה השופט מצא (בדיקה של כל הצירופים)"):
@@ -268,11 +221,11 @@ def sandbox_tab(scenario: dict):
         "dessert": c3.selectbox("קינוח", names["dessert"], key="sb_dessert"),
     }
 
-    b1, b2, b3, b4 = st.columns(4)
-    for col, name in zip((b1, b2, b3), ("calculate_cost", "check_guests", "finalize_menu")):
+    *tool_columns, judge_column = st.columns(5)
+    for col, name in zip(tool_columns, ("calculate_cost", "check_guests", "suggest_swaps", "finalize_menu")):
         if col.button(name, width="stretch"):
             st.session_state.sandbox = (name, getattr(tools, name)(menu))
-    if b4.button("🔍 מה התשובה הנכונה?", width="stretch"):
+    if judge_column.button("🔍 מה התשובה הנכונה?", width="stretch"):
         st.session_state.sandbox = ("שופט", find_best_menu(tools))
 
     if "sandbox" in st.session_state:

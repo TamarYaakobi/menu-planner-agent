@@ -63,6 +63,69 @@ SCENARIOS = [
         ]},
     },
     {
+        "id": "every_allergy",
+        "title": "כל סוגי האלרגיות",
+        "description": "5 אורחים, לכל אחד אלרגיה אחרת (גלוטן, ביצים, חלב, אגוזים, דגים). "
+                       "התקציב משאיר רק 2 תפריטים תקינים מתוך 192.",
+        "expect": "success",
+        "request": {"num_guests": 12, "budget": 156, "guests": [
+            {"name": "עומר", "allergies": ["gluten"]},
+            {"name": "רון", "allergies": ["eggs"]},
+            {"name": "ליאת", "allergies": ["dairy"]},
+            {"name": "דנה", "allergies": ["nuts"]},
+            {"name": "מאיה", "allergies": ["fish"]},
+        ]},
+    },
+    {
+        "id": "allergic_to_all",
+        "title": "אלרגית לכל החמישה",
+        "description": "אורחת אחת אלרגית לכל האלרגנים, ואורח צמחוני. רק 2 תפריטים תקינים בתקציב.",
+        "expect": "success",
+        "request": {"num_guests": 10, "budget": 130, "guests": [
+            {"name": "נגה", "allergies": ["gluten", "eggs", "dairy", "nuts", "fish"]},
+            {"name": "יוסי", "diet": "vegetarian"},
+        ]},
+    },
+    {
+        "id": "picky_crowd",
+        "title": "קהל בררן",
+        "description": "5 אורחים עם 9 מרכיבים לא אהובים - כל החלפה עלולה לשבור העדפה של מישהו אחר. "
+                       "רק 2 תפריטים תקינים בתקציב, בהפרש של שקל אחד.",
+        "expect": "success",
+        "request": {"num_guests": 12, "budget": 184.6, "guests": [
+            {"name": "אבי", "dislikes": ["עגבניות", "פטריות"]},
+            {"name": "בתיה", "dislikes": ["עדשים", "שום"]},
+            {"name": "גיא", "dislikes": ["תפוחי אדמה", "אורז"]},
+            {"name": "דבורה", "dislikes": ["בצל"]},
+            {"name": "הילה", "diet": "vegetarian", "dislikes": ["ביצים"]},
+        ]},
+    },
+    {
+        "id": "picky_allergic",
+        "title": "בררנים ואלרגיים",
+        "description": "שילוב של העדפות, אלרגיות (אגוזים וחלב) וצמחונות. רק 2 תפריטים תקינים בתקציב.",
+        "expect": "success",
+        "request": {"num_guests": 12, "budget": 181, "guests": [
+            {"name": "אבי", "dislikes": ["עגבניות", "מלפפונים", "קישואים"]},
+            {"name": "בתיה", "dislikes": ["שוקולד", "תפוזים", "אבטיח"]},
+            {"name": "גיא", "allergies": ["nuts", "dairy"]},
+            {"name": "דבורה", "diet": "vegetarian", "dislikes": ["פלפל"]},
+        ]},
+    },
+    {
+        "id": "almost_possible",
+        "title": "כמעט אפשרי",
+        "description": "אותם בררנים ואלרגיים, והתקציב נמוך בשקל אחד מהתפריט הזול ביותר. "
+                       "כדי לדווח נכון, האג'נט חייב להגיע בדיוק למינימום.",
+        "expect": "failure",
+        "request": {"num_guests": 12, "budget": 176, "guests": [
+            {"name": "אבי", "dislikes": ["עגבניות", "מלפפונים", "קישואים"]},
+            {"name": "בתיה", "dislikes": ["שוקולד", "תפוזים", "אבטיח"]},
+            {"name": "גיא", "allergies": ["nuts", "dairy"]},
+            {"name": "דבורה", "diet": "vegetarian", "dislikes": ["פלפל"]},
+        ]},
+    },
+    {
         "id": "single_guest",
         "title": "סועד יחיד",
         "description": "ארוחה לאדם אחד. בודק שהחישובים עובדים גם בכמויות קטנות.",
