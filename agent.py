@@ -21,7 +21,7 @@ from typing import Callable
 
 from openai import APIError, RateLimitError
 
-from goal_parser import parse_goal, unknown_dislikes
+from goal_parser import parse_goal, unknown_dislikes, unknown_likes
 from llm import ConfigError, ask_model, create_client, fallback_models
 from tools import ALLERGENS, CATEGORIES, DIETS, DataError, MenuRequest, MenuTools, load_json
 
@@ -438,7 +438,8 @@ def _confirm_goal(goal, interactive: bool, auto_yes: bool) -> dict | str | None:
     for title, items in (("הנחות שעשיתי", goal.assumptions),
                          ("⚠️ הגבלות שהמערכת לא יודעת לבדוק - התפריט לא מתחשב בהן", goal.unsupported),
                          ("⚠️ ייתכן שלא הבנתי נכון", goal.warnings),
-                         ("לא מופיע באף מנה במאגר", unknown_dislikes(goal.request))):
+                         ("לא מופיע באף מנה במאגר", unknown_dislikes(goal.request)),
+                         ("🤍 אוהב/ת - אבל אין מתכון כזה במאגר, ולכן לא ישולב", unknown_likes(goal.request))):
         if items:
             print(f"\n{title}:\n" + "\n".join(f"  - {item}" for item in items))
 

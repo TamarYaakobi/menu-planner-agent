@@ -58,6 +58,17 @@ class TestCrossCheck(unittest.TestCase):
         self.assertEqual((request["target_budget"], request["budget"]), (400, 450))
         MenuRequest.from_dict(request)  # תקין
 
+    def test_explicit_ceiling_beats_the_model(self):
+        # באג אמיתי: "כ-10 אנשים, עד 300 שקל" - המודל סימן בקירוב, אבל "עד 300" היא תקרה
+        from goal_parser import budget_is_approximate
+        self.assertFalse(budget_is_approximate("כ-10 אנשים, עד 300 שקל", model_says=True))
+        self.assertFalse(budget_is_approximate("ארוחה שלא תעלה יותר מ300 שקל", model_says=True))
+        self.assertTrue(budget_is_approximate("בערך 300 שקל", model_says=False))
+        self.assertTrue(budget_is_approximate("יש לי משהו כמו 300", model_says=True))  # אין סימן בטקסט - סומכים על המודל
+        result = parse_goal(FakeClient(submit(parsed(budget_total=300, budget_approximate=True))), "fake",
+                            "כ-10 אנשים, עד 300 שקל")
+        self.assertNotIn("target_budget", result.request)
+
     def test_model_flag_or_text_marks_approximate(self):
         # הקוד מזהה "בערך" גם אם המודל לא סימן, והמודל יכול לסמן גם אם הקוד לא זיהה
         result = parse_goal(FakeClient(submit(parsed(budget_total=400))), "fake", "4 איש, תקציב של בערך 400")
@@ -137,7 +148,27 @@ class TestCrossCheck(unittest.TestCase):
         self.assertEqual(liked_words("רון לא אוהב עוף"), [])          # שלילה
         self.assertEqual(liked_words("סבתא שלא אוהבת עוף"), [])       # שלילה עם "שלא"
         self.assertEqual(liked_words("מיכל אוהבת לבשל"), [])          # לא מאכל
-        self.assertEqual(liked_words("סבא אוהב חריף"), [])            # לא במאגר - אין מה לעשות איתו
+        self.assertEqual(liked_words("היא אוהבת את זה"), [])          # לא מאכל
+        # גם מה שלא במאגר ("חצילים" נשמט בשקט בצ'אט), ורשימה עם ו'
+        self.assertEqual(liked_words("אני ממש אוהבת חצילים ופירורי לחם"), ["חצילים", "פירורי"])
+        self.assertEqual(liked_words("סבא אוהב חריף"), ["חריף"])
+        self.assertEqual(liked_words("נועה אוהבת שקשוקה ורון לא"), ["שקשוקה"])  # "רון" הוא שם, לא מאכל
+
+    def test_dropped_like_not_in_database_is_caught(self):
+        text = "אני ממש אוהבת חצילים ופירורי לחם"
+        self.assertProblem(text, parsed([guest("אני", likes=["פירורי לחם"])]))
+        self.assertProblem(text, parsed([guest("אני", likes=["פירורי לחם", "חצילים"])]), False)
+
+    def test_like_matches_by_root(self):
+        # אזהרת שווא אמיתית: "אוהב אגוזים" נרשם (נכון) כ"אגוזי מלך"
+        self.assertProblem("הבן שלי אוהב אגוזים", parsed([guest(likes=["אגוזי מלך"])]), False)
+        self.assertProblem("אוהבת חציל", parsed([guest(likes=["חצילים"])]), False)
+        self.assertProblem("אוהבת חצילים", parsed([guest(likes=["חסה"])]))  # שורש שונה - עדיין חסר
+
+    def test_unknown_likes(self):
+        from goal_parser import unknown_likes
+        request = {"guests": [guest(likes=["חצילים", "חסה", "שקשוקה"])]}
+        self.assertEqual(unknown_likes(request), ["חצילים"])
 
     def test_like_mention_is_not_an_allergy(self):
         self.assertProblem("דנה אוהבת ביצים", parsed([guest(likes=["ביצים"])]), False)
@@ -235,6 +266,66 @@ class TestParseGoalLoop(unittest.TestCase):
         parse_goal(client, "fake", "10 איש, 200 שקל, צליאק")
         answered = {m["tool_call_id"] for m in client.requests[1] if m["role"] == "tool"}
         self.assertEqual(answered, {"a", "b"})
+
+
+class TestModelOutputRobustness(unittest.TestCase):
+    """פלט של מודל יכול להיות כל דבר. שום פלט לא אמור להפיל את התוכנית - רק להחזיר הסבר."""
+
+    def test_diet_as_list(self):
+        # הבאג מהצ'אט: diet: ["vegetarian"] הפיל את רשת הביטחון
+        data = parsed([dict(guest("יוסי"), diet=["vegetarian"])])
+        result = parse_goal(FakeClient(submit(data)), "fake", "10 איש, 200 שקל, יוסי צמחוני")
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.request["guests"][0]["diet"], "vegetarian")
+
+    def test_common_format_mistakes_are_fixed(self):
+        from goal_parser import normalize
+        fixed = normalize({"guests": {"name": "דנה", "allergies": "nuts", "diet": ["vegan", "vegetarian"],
+                                      "dislikes": None, "likes": "חסה"},
+                           "assumptions": "הנחה אחת", "unsupported": None})
+        g = fixed["guests"][0]
+        self.assertEqual((g["allergies"], g["diet"], g["dislikes"], g["likes"]), (["nuts"], "vegan", [], ["חסה"]))
+        self.assertEqual((fixed["assumptions"], fixed["unsupported"]), (["הנחה אחת"], []))
+
+    def test_fuzz_never_crashes(self):
+        import random
+        from goal_parser import ParsedGoal, _evaluate
+        rng = random.Random(0)
+        junk = [None, "", "nuts", "vegetarian", 0, -3, 12, 12.5, True, [], ["nuts"], ["vegetarian", "keto"],
+                [["x"]], {"a": 1}, [None], ["", " "], ["חסה", 5], "שניים", float("inf")]
+
+        # מתחילים מפלט תקין ומשבשים 1-3 שדות: פלט אקראי לגמרי נפסל מיד בתקינות,
+        # ולא מגיע לרשת הביטחון - שם בדיוק הייתה הקריסה מהצ'אט
+        def valid_output():
+            return {"num_guests": 10, "budget_total": 300, "assumptions": ["הנחה"], "unsupported": [],
+                    "guests": [guest("דני", allergies=["gluten"]), guest("נועה", diet="vegan", likes=["חסה"]),
+                               guest("רון", dislikes=["פטריות"])]}
+
+        def corrupt(data):
+            for _ in range(rng.randint(1, 3)):
+                guests = [g for g in data["guests"] if isinstance(g, dict)] if isinstance(data["guests"], list) else []
+                if rng.random() < 0.6 and guests:
+                    rng.choice(guests)[rng.choice(["name", "allergies", "diet", "dislikes", "likes"])] = rng.choice(junk)
+                else:
+                    key = rng.choice(["num_guests", "budget_total", "budget_per_guest", "budget_approximate",
+                                      "assumptions", "unsupported", "off_topic", "guests"])
+                    data[key] = rng.choice(junk)
+            return data
+
+        previous = ParsedGoal("ok", request={"num_guests": 4, "budget": 300, "guests": [guest("דני", allergies=["dairy"])]})
+        reached_checks = 0  # כמה מקרים עברו את בדיקת התקינות והגיעו לרשת הביטחון - שם הייתה הקריסה המקורית
+        for i in range(3000):
+            data = corrupt(valid_output())
+            for attempt in (1, 3):
+                with self.subTest(i=i, attempt=attempt, data=data):
+                    result = _evaluate("דני צליאק, אוהבת חסה, בערך 300 שקל", data, attempt,
+                                       previous if i % 2 else None)
+                    self.assertIn(result.status, ("ok", "needs_info", "off_topic", "error"))
+                    if result.status == "ok" and not result.warnings:
+                        MenuRequest.from_dict(result.request)  # "ok" בלי אזהרות = בקשה תקינה באמת
+                    if result.status == "ok" and not any(w.startswith("הבקשה לא תקינה") for w in result.warnings):
+                        reached_checks += 1
+        self.assertGreater(reached_checks, 100, "הבדיקה צריכה להגיע גם לרשת הביטחון, לא רק להיפסל בתקינות")
 
 
 class TestUpdates(unittest.TestCase):

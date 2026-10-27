@@ -10,14 +10,17 @@
 
 השיחות נשמרות בתיקייה conversations (לא עולה ל-Git), ואפשר לחזור לכל אחת מסרגל הצד.
 """
+import traceback
+
 import pandas as pd
 import streamlit as st
 from openai import APIError
 
 from agent import MenuAgent, short_args, summarize
-from chat_logic import (STATE_KEYS, delete_conversation, format_recipe, is_thanks, is_yes, list_conversations,
-                        load_conversation, new_conversation_id, requested_dishes, save_conversation, wants_recipes)
-from goal_parser import parse_goal, unknown_dislikes
+from chat_logic import (STATE_KEYS, cost_answer, delete_conversation, format_recipe, is_cost_question, is_thanks,
+                        is_yes, list_conversations, load_conversation, new_conversation_id, requested_dishes,
+                        save_conversation, wants_recipes)
+from goal_parser import parse_goal, unknown_dislikes, unknown_likes
 from llm import ConfigError, create_client, fallback_models
 from tools import ALLERGENS, DIETS, MenuRequest, MenuTools
 
@@ -125,6 +128,9 @@ def describe_goal(goal) -> str:
     unknown = unknown_dislikes(goal.request)
     if unknown:
         lines.append(f"\n*לא מצאתי במתכונים שלי:* {', '.join(unknown)}")
+    missing_likes = unknown_likes(goal.request)
+    if missing_likes:
+        lines.append(f"\n🤍 *אין לי מתכונים עם {', '.join(missing_likes)}, אז לא אוכל לשלב את זה בתפריט.*")
     return "\n".join(lines)
 
 
@@ -244,7 +250,12 @@ def menu_answer(approved: dict, request) -> str:
     if likes:
         lines.append("")
         for like in likes:
-            where = f"יש ב{', '.join(like['dishes'])}" if like["in_menu"] else "לא הצלחתי לשלב בתקציב ובאילוצים"
+            if like["in_menu"]:
+                where = f"יש ב{', '.join(like['dishes'])}"
+            elif like["likes"] in unknown_likes(st.session_state.goal.request):
+                where = "אין לי מתכון עם זה"
+            else:
+                where = "לא הצלחתי לשלב בתקציב ובאילוצים"
             lines.append(f"{'❤️' if like['in_menu'] else '🤍'} {like['guest']} אוהב/ת {like['likes']} - {where}")
     lines += ["", "📖 **רוצה מתכונים?** כתבי \"מתכונים\", או למשל \"מתכון לקינוח\".",
               "אפשר גם לשנות משהו - למשל \"בלי סלמון\" או \"התקציב הוא בעצם 200\"."]
@@ -298,12 +309,18 @@ if text := st.chat_input("כתבי כאן..."):
     render_message(st.session_state.messages[-1])
 
     stage = st.session_state.stage
-    if stage == "confirm" and is_yes(text):
-        plan()
-    elif st.session_state.menu and wants_recipes(text):
-        show_recipes(text)
-    elif stage == "done" and is_thanks(text):
-        say("בשמחה! 😊 בתיאבון. אם תרצי מתכונים או שינוי בתפריט - רק תכתבי.")
-    else:
-        understand(text)  # בקשה חדשה, תשובה לשאלה, או תיקון לבקשה קיימת
+    try:
+        if stage == "confirm" and is_yes(text):
+            plan()
+        elif st.session_state.menu and wants_recipes(text):
+            show_recipes(text)
+        elif st.session_state.menu and is_cost_question(text):
+            say(cost_answer(st.session_state.menu))
+        elif stage == "done" and is_thanks(text):
+            say("בשמחה! 😊 בתיאבון. אם תרצי מתכונים או שינוי בתפריט - רק תכתבי.")
+        else:
+            understand(text)  # בקשה חדשה, תשובה לשאלה, או תיקון לבקשה קיימת
+    except Exception:  # רשת ביטחון אחרונה: הודעה ידידותית במקום traceback. הפרטים - בטרמינל
+        traceback.print_exc()
+        say("😕 משהו השתבש אצלי - תקלה פנימית, לא בגללך. אפשר לנסות לנסח שוב?")
     persist()

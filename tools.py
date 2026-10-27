@@ -119,7 +119,7 @@ class MenuRequest:
             if bad:
                 raise ValueError(f"אלרגיה לא מוכרת אצל {name}: {bad}. אפשרויות: {list(ALLERGENS)}")
             diet = g.get("diet")
-            if diet is not None and diet not in DIETS:
+            if diet is not None and (not isinstance(diet, str) or diet not in DIETS):  # גם רשימה - לא רק ערך לא מוכר
                 raise ValueError(f"תזונה לא מוכרת אצל {name}: '{diet}'. אפשרויות: {list(DIETS)}")
             # העדפה ריקה הייתה "מתאימה" לכל מרכיב ("" in "עגבניות" == True), אז מסננים אותה
             dislikes = [d.strip() for d in _string_list(g, "dislikes", name) if d.strip()]

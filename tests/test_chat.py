@@ -149,6 +149,19 @@ class TestChat(ChatTestCase):
         self.assertEqual(reply.count("### 🍳"), 5)
         self.parse.assert_called_once()  # בקשת מתכונים לא נשלחת למפענח
 
+    def test_cost_question_after_menu(self):
+        # השאלה שהפילה את הצ'אט - עכשיו נענית מהנתונים, בלי לשלוח למפענח
+        self.get_menu()
+        reply = self.send("כמה יעלה התפריט לסועד?")
+        self.assertIn("ש\"ח לסועד", reply)
+        self.assertIn("באריזות שלמות", reply)
+        self.parse.assert_called_once()
+
+    def test_unexpected_error_is_a_friendly_message(self):
+        self.parse.side_effect = TypeError("unhashable type: 'list'")
+        reply = self.send("4 איש, 300 שקל")
+        self.assertIn("משהו השתבש", reply)
+
     def test_thanks_after_menu(self):
         self.get_menu()
         self.assertIn("בשמחה", self.send("תודה רבה!"))

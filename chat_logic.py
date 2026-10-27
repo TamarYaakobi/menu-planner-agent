@@ -38,6 +38,31 @@ def is_thanks(text: str) -> bool:
     return bool(words) and all(w in THANKS for w in words)
 
 
+# ---------- שאלות על התפריט ----------
+
+# שאלה ("כמה יעלה לסועד?", "מה המחיר?") - לא בקשה לשנות ("תוריד את העלות" הוא תיקון, לא שאלה)
+_COST_QUESTION = re.compile(r"(כמה|מה ה(מחיר|עלות)|how much|what.*cost)", re.IGNORECASE)
+_COST_WORDS = re.compile(r"(עול|יעל|עלה|עלות|מחיר|לסועד|לאדם|cost|price|per (person|guest|head))", re.IGNORECASE)
+
+
+def is_cost_question(text: str) -> bool:
+    return bool(_COST_QUESTION.search(text) and _COST_WORDS.search(text))
+
+
+def cost_answer(saved_menu: dict) -> str:
+    """פירוט עלות התפריט שאושר - מחושב בקוד, מאותם מחירים שהאג'נט עבד איתם."""
+    from tools import MenuRequest, MenuTools  # כאן ולא למעלה: chat_logic נטען גם בלי הכלים
+    tools = MenuTools(MenuRequest.from_dict(saved_menu["request"]))
+    cost = tools.calculate_cost(saved_menu["approved"]["menu"])
+    guests = tools.request.num_guests
+    lines = [f"💰 **{cost['cost_per_guest']:.2f} ש\"ח לסועד** ({cost['total_cost']:.2f} ש\"ח ל-{guests} סועדים)", ""]
+    lines += [f"- {d['name']}: {d['cost'] / guests:.2f} ש\"ח" for d in cost["dishes"]]
+    packages = sum(item["packages_cost"] for item in saved_menu["approved"]["shopping_list"])
+    lines += ["", f"*זו עלות המצרכים שנכנסים לארוחה. בקופה, באריזות שלמות, זה יוצא בערך {packages:.0f} ש\"ח - "
+                  f"וחלק מהמצרכים (שמן, תבלינים) יישארו בבית.*"]
+    return "\n".join(lines)
+
+
 # ---------- היסטוריית שיחות ----------
 
 # מה נשמר מכל שיחה - מספיק כדי להמשיך בדיוק מאיפה שהפסקנו

@@ -9,8 +9,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from chat_logic import (delete_conversation, format_amount, format_recipe, is_thanks, is_yes,  # noqa: E402
-                        list_conversations, load_conversation, requested_dishes, save_conversation, wants_recipes)
+from chat_logic import (cost_answer, delete_conversation, format_amount, format_recipe,  # noqa: E402
+                        is_cost_question, is_thanks, is_yes, list_conversations, load_conversation,
+                        requested_dishes, save_conversation, wants_recipes)
 from goal_parser import ParsedGoal  # noqa: E402
 from tools import DATA_DIR, MenuRequest, MenuTools, load_json  # noqa: E402
 
@@ -35,6 +36,27 @@ class TestYesAndThanks(unittest.TestCase):
         self.assertTrue(is_thanks("תודה רבה!"))
         self.assertTrue(is_thanks("מושלם, תודה 🙏"))
         self.assertFalse(is_thanks("תודה, ובלי סלמון"))
+
+
+class TestCostQuestions(unittest.TestCase):
+
+    def test_detects_questions_not_requests(self):
+        for text in ("כמה יעלה התפריט לסועד?", "כמה זה עולה?", "מה המחיר לאדם?", "מה העלות?", "how much per person?"):
+            self.assertTrue(is_cost_question(text), text)
+        # בקשות לשנות - לא שאלות
+        for text in ("תוריד את העלות", "התקציב 200", "כמה סועדים יש?", "בלי סלמון"):
+            self.assertFalse(is_cost_question(text), text)
+
+    def test_answer_matches_the_tools(self):
+        menu = {"mains": ["עוף בתנור עם תפוחי אדמה", "קארי עדשים בחלב קוקוס"], "side": "תפוחי אדמה אפויים ברוזמרין",
+                "vegetable": "סלט חסה עם אגוזי מלך", "dessert": "סלט פירות"}
+        request = {"num_guests": 10, "budget": 1000, "guests": []}
+        tools = MenuTools(MenuRequest.from_dict(request))
+        approved = tools.finalize_menu(menu)
+        answer = cost_answer({"approved": approved, "request": request})
+        self.assertIn(f"{approved['cost_per_guest']:.2f} ש\"ח לסועד", answer)
+        self.assertIn("עוף בתנור עם תפוחי אדמה: 7.28", answer)  # 72.8 ש"ח לעשרה סועדים
+        self.assertIn("באריזות שלמות", answer)
 
 
 class TestRecipeRequests(unittest.TestCase):

@@ -62,6 +62,7 @@ PARSER_PROMPT = f"""אתה מפענח בקשות לתכנון ארוחה. קרא
   (למשל "ביצה" -> "ביצים"). מרכיב שלא ברשימה - רשום כמו שהוא, גם הוא ב-dislikes:
   {", ".join(_known_ingredients())}
 - likes: מנות או מרכיבים שהאדם אוהב ("אוהבת חסה", "מת על שקשוקה") - העדפה רכה. כתוב בשם מהרשימות כשאפשר.
+  גם אם זה לא קיים במאגר ("אוהבת חצילים") - רשום אותו ב-likes כמו שהוא. הקוד יגיד למשתמש שאין מתכון כזה.
   "אוהב X" זה תמיד likes, ולעולם לא dislikes. אורח שרק אוהב משהו - גם הוא ב-guests.
   מנות שיש במאגר: {", ".join(_known_dishes())}
 - unsupported: הגבלה רפואית, דתית או תזונתית שאינה ברשימות למעלה - כשרות, סוכרת, פירות ים, חזיר וכו'.
@@ -117,6 +118,23 @@ UNSUPPORTED_PATTERNS = [r"כשר\w*", r"סוכרת\w*", r"פירות\s+ים", r"
 
 def is_approximate(text: str) -> bool:
     return re.search(APPROX_PATTERN, text, re.IGNORECASE) is not None
+
+
+# "עד 300", "לא יותר מ-300", "מקסימום 300" - תקרה מפורשת
+# (מילה אחת מותרת באמצע: "שלא תעלה יותר מ300")
+CEILING_PATTERN = r"(עד|לא\s+(\S+\s+)?יותר\s+מ-?|מקסימום|max(imum)?|up\s+to|no\s+more\s+than)\s*\d"
+
+
+def budget_is_approximate(text: str, model_says: bool) -> bool:
+    """
+    הקוד מכריע: תקרה מפורשת בטקסט - לא בקירוב, גם אם המודל סימן ("כ-10 אנשים, עד 300 שקל" -
+    מודל סימן "בקירוב" בגלל ה-"כ-"). "בערך 300" בטקסט - בקירוב, גם אם המודל לא סימן.
+    """
+    if is_approximate(text):
+        return True
+    if re.search(CEILING_PATTERN, text, re.IGNORECASE):
+        return False
+    return model_says
 
 
 def mentioned(text: str, pattern: str) -> bool:
@@ -181,10 +199,14 @@ NEGATIONS = {"לא", "ולא", "שלא", "כשלא", "אינו", "אינה"}
 FILLERS = {"את", "גם", "מאוד", "ממש", "נורא", "הכי"}
 
 
+LIKE_STOPWORDS = {"זה", "אותו", "אותה", "אותם", "אותן", "כש", "מה", "הכל", "כולם", "אוכל", "לאכול"}
+
+
 def liked_words(text: str) -> list[str]:
     """
-    מה שמופיע אחרי "אוהב/ת" (בלי "לא" לפניו) - רק אם זו מנה או מרכיב שקיימים במאגר,
-    כדי לא להיתפס על "אוהבת לבשל" או "אוהב חריף" (שאין להם מה לעשות בתפריט).
+    מה שמופיע אחרי "אוהב/ת" (בלי "לא" לפניו), כולל רשימה עם ו' ("חצילים ופירורי לחם").
+    לא רק מה שיש במאגר: בצ'אט, "אני אוהבת חצילים" נשמט בשקט - ואין חצילים באף מתכון.
+    מילה שמתחילה ב-ל' ("אוהבת לבשל") היא פועל ולא מאכל - אלא אם היא במאגר.
     """
     tokens = [t.strip(".,!?;:\"'()") for t in text.split()]
     vocabulary = _known_ingredients() + _known_dishes()
@@ -195,18 +217,34 @@ def liked_words(text: str) -> list[str]:
         j = i + 1
         while j < len(tokens) and tokens[j] in FILLERS:
             j += 1
-        if j == len(tokens):
-            continue
-        word = tokens[j]
-        for candidate in (word, word[1:] if word.startswith("ה") else None):  # "את החסה" -> "חסה"
-            if candidate and len(candidate) >= 2 and any(candidate in v for v in vocabulary):
-                found.append(candidate)
-                break
+        first = True
+        while j < len(tokens) and (first or tokens[j].startswith("ו")):
+            # "חצילים ופירורי לחם": אחרי ו' - רק מאכל שקיים במאגר. אחרת "שקשוקה ורון לא אוהב..." תופס את "רון"
+            food = _as_food(tokens[j], vocabulary) if first else _as_food(tokens[j][1:], vocabulary, known_only=True)
+            if food:
+                found.append(food)
+            first, j = False, j + 1
     return found
 
 
+def _as_food(word: str, vocabulary: list[str], known_only: bool = False) -> str | None:
+    if len(word) < 3 or word in LIKE_STOPWORDS or word in FILLERS:  # "את זה" - לא מאכל
+        return None
+    for candidate in (word, word[1:] if word.startswith("ה") else None):  # "את החסה" -> "חסה"
+        if candidate and len(candidate) >= 3 and any(candidate in v for v in vocabulary):
+            return candidate
+    if known_only or word.startswith("ל"):  # "אוהבת לבשל" - פועל
+        return None
+    return word[1:] if word.startswith("ה") and len(word) > 3 else word
+
+
 def _same_food(a: str, b: str) -> bool:
-    return a in b or b in a
+    """"אגוזים" ו"אגוזי מלך", "חציל" ו"חצילים" - אותו מאכל. משווים גם לפי השורש, בלי סיומת רבים."""
+    return any(x in y or y in x for x in (a, _stem(a)) for y in (b, _stem(b)) if len(x) >= 2 and len(y) >= 2)
+
+
+def _stem(word: str) -> str:
+    return re.sub(r"(ים|ות|י|ה)$", "", word) if len(word) > 3 else word
 
 
 def detect_unsupported(text: str, parsed: dict) -> list[str]:
@@ -270,10 +308,12 @@ def build_request(parsed: dict, approximate: bool = False) -> tuple[dict | None,
         else:
             budget = round(per_guest * num_guests, 2)
 
-    guests = [{"name": g.get("name") or "אורח", "allergies": g.get("allergies") or [],
-               "diet": g.get("diet"), "dislikes": g.get("dislikes") or [],
-               "likes": g.get("likes") or []} if isinstance(g, dict) else g
-              for g in parsed.get("guests") or []]
+    guests = parsed.get("guests") or []
+    if isinstance(guests, list):  # אחרת (מספר, true) - עובר כמו שהוא, ו-from_dict יסביר שצריך רשימה
+        guests = [{"name": g.get("name") or "אורח", "allergies": g.get("allergies") or [],
+                   "diet": g.get("diet"), "dislikes": g.get("dislikes") or [],
+                   "likes": g.get("likes") or []} if isinstance(g, dict) else g
+                  for g in guests]
     request = {"num_guests": num_guests, "budget": budget, "guests": guests}
     if approximate and isinstance(budget, (int, float)) and budget > 0:
         request["target_budget"], request["budget"] = budget, round(budget + APPROX_MARGIN, 2)
@@ -345,31 +385,69 @@ def _parse_loop(client, current: dict, text: str, on_wait, fallbacks, switch, pr
     return ParsedGoal("error", error="לא הצלחתי לפענח את הבקשה: " + "; ".join(problems), attempts=MAX_ATTEMPTS)
 
 
+def normalize(parsed: dict) -> dict:
+    """
+    מתקן טעויות פורמט נפוצות של מודלים לפני כל בדיקה. בצ'אט, מודל החזיר diet: ["vegetarian"] (רשימה
+    במקום מחרוזת) וזה הפיל את התוכנית. ערך שאי אפשר לתקן נשאר כמו שהוא - ו-MenuRequest.from_dict
+    יסביר למודל מה לא בסדר.
+    """
+    parsed = dict(parsed)
+    for key in ("assumptions", "unsupported"):  # הערות - מה שאינו טקסט פשוט לא רלוונטי
+        value = parsed.get(key)
+        value = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+        parsed[key] = [v for v in value if isinstance(v, str) and v.strip()]
+    guests = parsed.get("guests")
+    if isinstance(guests, dict):  # אורח יחיד בלי רשימה
+        guests = [guests]
+    if isinstance(guests, list):
+        parsed["guests"] = [_normalize_guest(g) if isinstance(g, dict) else g for g in guests]
+    return parsed
+
+
+def _normalize_guest(guest: dict) -> dict:
+    guest = dict(guest)
+    for key in ("allergies", "dislikes", "likes"):
+        value = guest.get(key)
+        if value is None:
+            guest[key] = []
+        elif isinstance(value, str):  # "nuts" במקום ["nuts"]
+            guest[key] = [value] if value.strip() else []
+    diet = guest.get("diet")
+    if isinstance(diet, list):  # ["vegetarian"] במקום "vegetarian". כמה ערכים - המחמיר מביניהם
+        known = [d for d in diet if isinstance(d, str) and d in DIETS]
+        guest["diet"] = "vegan" if "vegan" in known else "vegetarian" if known else (None if not diet else diet)
+    elif isinstance(diet, str) and diet.strip().lower() in ("", "none", "null"):
+        guest["diet"] = None
+    return guest
+
+
 def _evaluate(text: str, parsed: dict, attempt: int, previous: ParsedGoal | None = None) -> ParsedGoal:
     """בודק פענוח אחד. warnings לא ריק = יש מה לתקן (ובניסיון האחרון - להציג למשתמש)."""
-    common = {"assumptions": list(parsed.get("assumptions") or []),
-              "unsupported": list(parsed.get("unsupported") or []) + detect_unsupported(text, parsed),
+    parsed = normalize(parsed)
+    common = {"assumptions": list(parsed["assumptions"]),
+              "unsupported": parsed["unsupported"] + detect_unsupported(text, parsed),
               "attempts": attempt}
     if parsed.get("off_topic"):
         return ParsedGoal("off_topic", error="הבקשה לא נראית כמו תכנון ארוחה", **common)
 
-    # הקוד מחליט אם התקציב בקירוב: המודל יכול רק להוסיף את זה, לא לבטל מה שכתוב בטקסט
-    approximate = bool(parsed.get("budget_approximate")) or is_approximate(text)
+    approximate = budget_is_approximate(text, bool(parsed.get("budget_approximate")))
     request, missing = build_request(parsed, approximate)
     if missing:
         return ParsedGoal("needs_info", questions=[QUESTIONS[m] for m in missing], **common)
     if "target_budget" in request:
         common["assumptions"].append(f"התקציב בקירוב: אנסה להישאר ב-{request['target_budget']:g} ש\"ח, ואם אין ברירה - עד {request['budget']:g}")
 
-    problems = cross_check(text, parsed)
-    if previous is not None:
-        problems += removed_constraints(previous.request, request, text)
+    # קודם תקינות: שאר הבדיקות מניחות שהסוגים נכונים (רשימות של מחרוזות, diet כמחרוזת)
     try:
         MenuRequest.from_dict(request)
     except ValueError as e:
-        problems.insert(0, f"הבקשה לא תקינה: {e}")
         if attempt == MAX_ATTEMPTS:
             return ParsedGoal("error", error=str(e), **common)
+        return ParsedGoal("ok", request=request, warnings=[f"הבקשה לא תקינה: {e}"], **common)
+
+    problems = cross_check(text, parsed)
+    if previous is not None:
+        problems += removed_constraints(previous.request, request, text)
     changes = describe_changes(previous.request, request) if previous is not None else []
     return ParsedGoal("ok", request=request, warnings=problems, changes=changes, **common)
 
@@ -452,3 +530,9 @@ def unknown_dislikes(request: dict) -> list[str]:
     """העדפות שלא מתאימות לאף מרכיב במאגר - לא שגיאה (אולי באמת אין כוסברה), אבל כדאי שהמשתמש יראה."""
     known = _known_ingredients()
     return [d for g in request["guests"] for d in g["dislikes"] if not any(d in ing for ing in known)]
+
+
+def unknown_likes(request: dict) -> list[str]:
+    """דברים שמישהו אוהב ואין באף מנה במאגר - האג'נט לא יוכל לשלב אותם, וחשוב שהמשתמשת תדע."""
+    known = _known_ingredients() + _known_dishes()
+    return [x for g in request["guests"] for x in g.get("likes", []) if not any(x in k for k in known)]
