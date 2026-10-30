@@ -20,8 +20,8 @@ from chat_logic import list_conversations  # noqa: E402
 from goal_parser import ParsedGoal  # noqa: E402
 
 CHAT = str(Path(__file__).parent.parent / "chat.py")
-VALID_MENU = {"mains": ["עוף בתנור עם תפוחי אדמה", "קארי עדשים בחלב קוקוס"],
-              "side": "מג'דרה", "vegetable": "סלט חסה עם אגוזי מלך", "dessert": "סלט פירות"}
+VALID_MENU = {"main": ["עוף בתנור עם תפוחי אדמה", "קארי עדשים בחלב קוקוס"],
+              "side": ["מג'דרה"], "vegetable": ["סלט חסה עם אגוזי מלך"], "dessert": ["סלט פירות"]}
 REQUEST = {"num_guests": 4, "budget": 300, "guests": [
     {"name": "דוד", "allergies": ["dairy"], "diet": None, "dislikes": [], "likes": []},
     {"name": "דודה", "allergies": [], "diet": None, "dislikes": [], "likes": ["חסה"]}]}

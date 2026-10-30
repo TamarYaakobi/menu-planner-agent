@@ -1,8 +1,8 @@
 """
 השופט: בודק אם האג'נט קיבל את ההחלטה הנכונה.
 
-זה *לא* חלק מהאג'נט. המאגר שלנו קטן (כ-4,200 צירופי תפריט), אז אפשר פשוט לנסות
-את כולם ולדעת בוודאות מה התפריט התקין הזול ביותר - ומזה, אם בכלל היה פתרון.
+זה *לא* חלק מהאג'נט. המאגר שלנו קטן מספיק כדי לעבור על כל צירופי התפריט, ולדעת בוודאות
+מה התפריט התקין הזול ביותר - ומזה, אם בכלל היה פתרון.
 עם מאגר אמיתי (אלפי מתכונים, החלפות מרכיבים) חיפוש כזה כבר לא אפשרי,
 ובשביל זה יש אג'נט. כאן הוא משמש רק כ"תשובון" לבדיקה.
 
@@ -12,6 +12,8 @@
     python evaluate.py --goals                  # פענוח מטרות בשפה חופשית
 """
 import argparse
+import bisect
+import math
 import sys
 import time
 from itertools import combinations, product
@@ -23,60 +25,90 @@ from goal_cases import GOAL_CASES, UPDATE_CASES, check_goal
 from goal_parser import ParsedGoal, parse_goal
 from llm import ConfigError, create_client, fallback_models
 from scenarios import SCENARIOS
-from tools import DataError, MenuRequest, MenuTools
+from tools import MAX_DISLIKED_NON_MAIN, DataError, MenuRequest, MenuTools, kashrut
 
 
 def find_best_menu(tools: MenuTools) -> dict:
     """
     מוצא את התפריט התקין הזול ביותר (מחיר מלא + כל האורחים מסודרים), בלי קשר לתקציב.
-    עם 40 מתכונים יש כ-59,000 צירופים, אז:
-      - עלות כל מנה מחושבת פעם אחת (אותה פונקציה שהכלים משתמשים בה), ועלות תפריט = סכום.
-      - תוספת/ירקות/קינוח שמישהו לא יכול לאכול - מסוננים מראש (הם פסולים לפי הכללים בכל מקרה).
-    את התקינות עצמה עדיין קובע check_guests - בדיוק כמו אצל האג'נט.
+    עם מנה ראשונה יש כבר כחצי מיליון צירופים, אז לא בודקים כל תפריט בנפרד:
+      - לכל סוג מנה עוברים על כל הצירופים שלו (למשל כל זוג עיקריות), ומקבצים צירופים שנראים
+        אותו דבר מבחינת הכללים: אילו אורחים "נתקעים" רק עם מנות שהם לא אוהבים, בשרי/חלבי,
+        ואילו "אוהב/ת" יש בהם. צירוף שמישהו לא יכול לאכול ממנו כלום - נפסל מיד.
+      - עוברים על כל הצירופים של קבוצות (מעטים), ובכל אחד הזול ביותר הוא סכום הזולים.
+    את התפריט הזול ביותר שנמצא בודק גם check_guests - אם הם לא מסכימים, זה באג.
     """
-    guests = tools.request.guests
+    request = tools.request
+    guests = request.guests
     costs = {}
     for name in tools.recipes:
         cost, missing = tools.dish_cost(name)
         costs[name] = None if missing else cost
+    likes = [(g, like) for g in guests for like in g.likes]
 
-    def usable(name):
-        recipe = tools.recipes[name]
-        if costs[name] is None:
-            return False
-        return recipe["category"] == "main" or not any(g.hard_conflicts(recipe) for g in guests)
+    groups = []  # לכל סוג מנה: {חתימה: [(עלות, צירוף), ...] מהזול ליקר}
+    for category, count in request.courses.items():
+        names = [n for n, r in tools.recipes.items() if r["category"] == category and costs[n] is not None
+                 and n not in request.exclude_dishes]
+        by_signature: dict[tuple, list] = {}
+        for combo in combinations(names, count):
+            recipes = [tools.recipes[n] for n in combo]
+            stuck = []  # לכל אורח: כל מה שמותר לו כאן מכיל משהו שהוא לא אוהב
+            for g in guests:
+                edible = [r for r in recipes if not g.hard_conflicts(r)]
+                if not edible:
+                    break
+                stuck.append(all(g.disliked_ingredients(r) for r in edible))
+            else:
+                if category == "main" and any(stuck):
+                    continue
+                signature = (tuple(stuck), frozenset(kashrut(r) for r in recipes) & {"meat", "dairy"},
+                             tuple(any(like in g.liked_in(r) for r in recipes) for g, like in likes))
+                by_signature.setdefault(signature, []).append((round(sum(costs[n] for n in combo), 2), combo))
+        groups.append([(sig, sorted(options)) for sig, options in by_signature.items()])
 
-    by_category = {c: [n for n, r in tools.recipes.items() if r["category"] == c and usable(n)]
-                   for c in ("main", "side", "vegetable", "dessert")}
-    needs_check = bool(guests) or tools.request.kosher  # בלי אורחים ובלי כשרות - כל תפריט תקין
-    best, valid_count, within_budget_count = None, 0, 0
-    total_likes = sum(len(g.likes) for g in guests)
-    max_likes = 0  # הכי הרבה העדפות "אוהב/ת" שאפשר לכלול בתפריט תקין שבתקציב
-
-    for mains, side, vegetable, dessert in product(combinations(by_category["main"], 2),
-                                                   by_category["side"], by_category["vegetable"],
-                                                   by_category["dessert"]):
-        menu = {"mains": list(mains), "side": side, "vegetable": vegetable, "dessert": dessert}
-        total = round(sum(costs[d] for d in (*mains, side, vegetable, dessert)), 2)
-        check = tools.check_guests(menu) if needs_check else {"all_satisfied": True}
-        if not check["all_satisfied"]:
+    best, valid_count, within_budget_count, max_likes = None, 0, 0, 0
+    for chosen in product(*groups):
+        signatures = [sig for sig, _ in chosen]
+        stuck_courses = [sum(sig[0][i] for sig in signatures) for i in range(len(guests))]
+        if any(n > MAX_DISLIKED_NON_MAIN for n in stuck_courses):
             continue
-        valid_count += 1
-        within_budget = total <= tools.request.budget
-        within_budget_count += within_budget
-        if within_budget and total_likes:
-            max_likes = max(max_likes, sum(x["in_menu"] for x in check.get("likes", [])))
+        if request.kosher and {"meat", "dairy"} <= set().union(*(sig[1] for sig in signatures)):
+            continue
+        options = [opts for _, opts in chosen]
+        valid_count += math.prod(len(o) for o in options)
+        total = round(sum(o[0][0] for o in options), 2)
+        if total <= request.budget:
+            within_budget_count += _count_within([[c for c, _ in o] for o in options], request.budget)
+            max_likes = max(max_likes, sum(any(sig[2][i] for sig in signatures) for i in range(len(likes))))
         if best is None or total < best["total_cost"]:
-            best = {"menu": menu, "total_cost": total}
+            best = {"menu": {c: list(o[0][1]) for c, o in zip(request.courses, options)}, "total_cost": total}
 
+    if best and not tools.check_guests(best["menu"])["all_satisfied"]:
+        raise AssertionError(f"השופט והכלים לא מסכימים על התפריט {best['menu']} - יש באג באחד מהם")
     return {
         "best": best,                                   # None = אין תפריט תקין בכלל
-        "solvable": within_budget_count > 0,
+        "solvable": best is not None and best["total_cost"] <= request.budget,
         "valid_menus": valid_count,
         "valid_within_budget": within_budget_count,
-        "total_likes": total_likes,
-        "max_likes": max_likes,
+        "total_likes": len(likes),
+        "max_likes": max_likes,                         # הכי הרבה "אוהב/ת" בתפריט תקין שבתקציב
     }
+
+
+def _count_within(costs: list[list[float]], limit: float) -> int:
+    """בכמה צירופים (מחיר אחד מכל רשימה ממוינת) הסכום לא עובר את limit - בלי לעבור על כולם."""
+    first, rest = costs[0], costs[1:]
+    if not rest:
+        return bisect.bisect_right(first, limit + 1e-9)
+    rest_min, rest_max = sum(r[0] for r in rest), sum(r[-1] for r in rest)
+    rest_size = math.prod(len(r) for r in rest)
+    count = 0
+    for cost in first:
+        if cost + rest_min > limit + 1e-9:
+            break
+        count += rest_size if cost + rest_max <= limit + 1e-9 else _count_within(rest, limit - cost)
+    return count
 
 
 def likes_note(agent_likes: int | None, truth: dict) -> str:

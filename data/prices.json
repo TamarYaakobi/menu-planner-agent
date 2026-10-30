@@ -65,5 +65,6 @@
   "בשר בקר לבישול": {"price": 69.9, "package_size": 1000, "unit": "g"},
   "פילה אמנון": {"price": 59.9, "package_size": 1000, "unit": "g"},
   "עמילן תירס": {"price": 6.9, "package_size": 400, "unit": "g"},
-  "בזיליקום": {"price": 5.9, "package_size": 50, "unit": "g"}
+  "בזיליקום": {"price": 5.9, "package_size": 50, "unit": "g"},
+  "אפונה": {"price": 12.9, "package_size": 800, "unit": "g"}
 }

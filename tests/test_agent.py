@@ -21,8 +21,8 @@ from scenarios import SCENARIOS  # noqa: E402
 from tools import MenuRequest, MenuTools  # noqa: E402
 
 VALID_MENU = {
-    "mains": ["עוף בתנור עם תפוחי אדמה", "קארי עדשים בחלב קוקוס"],
-    "side": "מג'דרה", "vegetable": "סלט ירקות קצוץ", "dessert": "סלט פירות",
+    "main": ["עוף בתנור עם תפוחי אדמה", "קארי עדשים בחלב קוקוס"],
+    "side": ["מג'דרה"], "vegetable": ["סלט ירקות קצוץ"], "dessert": ["סלט פירות"],
 }
 
 
@@ -173,7 +173,7 @@ class TestGivingUp(unittest.TestCase):
 
     def test_cheap_menu_that_breaks_a_constraint_is_not_tracked(self):
         agent, _, _ = make_agent(reply(call("calculate_cost", {"menu": dict(
-            VALID_MENU, side="אורז עם שקדים קלויים")})), guests=[{"name": "דנה", "allergies": ["nuts"]}],
+            VALID_MENU, side=["אורז עם שקדים קלויים"])})), guests=[{"name": "דנה", "allergies": ["nuts"]}],
             max_steps=1)
         agent.run()
         self.assertIsNone(agent.best_cost)
@@ -212,9 +212,9 @@ class TestBadToolCalls(unittest.TestCase):
 class TestBookkeeping(unittest.TestCase):
 
     def test_best_cost_keeps_cheapest_complete_menu(self):
-        cheap = dict(VALID_MENU, vegetable="סלט ירקות קצוץ")
-        expensive = dict(VALID_MENU, mains=["סלמון בתנור עם לימון ושמיר", "קארי עדשים בחלב קוקוס"])
-        missing_price = dict(VALID_MENU, mains=["ריזוטו כמהין", "שקשוקה"])  # "זול" אבל חלקי
+        cheap = dict(VALID_MENU, vegetable=["סלט ירקות קצוץ"])
+        expensive = dict(VALID_MENU, main=["סלמון בתנור עם לימון ושמיר", "קארי עדשים בחלב קוקוס"])
+        missing_price = dict(VALID_MENU, main=["ריזוטו כמהין", "שקשוקה"])  # "זול" אבל חלקי
         agent, _, _ = make_agent(
             reply(call("calculate_cost", {"menu": cheap}, "a"), call("calculate_cost", {"menu": expensive}, "b"),
                   call("calculate_cost", {"menu": missing_price}, "c")),
@@ -371,7 +371,8 @@ class TestUI(unittest.TestCase):
     def test_sandbox_buttons(self):
         from streamlit.testing.v1 import AppTest
         app = AppTest.from_file(str(Path(__file__).parent.parent / "ui.py"), default_timeout=30).run()
-        app.multiselect(key="sb_mains").set_value(VALID_MENU["mains"]).run()
+        for category, dishes in VALID_MENU.items():
+            next(m for m in app.multiselect if m.key.endswith(f"_{category}")).set_value(dishes).run()
         for button in app.button:
             if button.label in ("calculate_cost", "check_guests", "suggest_swaps", "finalize_menu"):
                 button.click().run()

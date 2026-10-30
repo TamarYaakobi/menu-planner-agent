@@ -11,8 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from goal_parser import (MAX_ATTEMPTS, build_request, cross_check, detect_unsupported,  # noqa: E402
-                         parse_goal, unknown_dislikes)
+from goal_parser import (MAX_ATTEMPTS, ParsedGoal, _evaluate, build_request, cross_check,  # noqa: E402
+                         describe_changes, detect_unsupported, parse_goal, unknown_dislikes)
 from test_agent import FakeClient, call, reply  # noqa: E402
 from tools import MenuRequest  # noqa: E402
 
@@ -227,6 +227,95 @@ class TestBuildRequest(unittest.TestCase):
 # המודל פירט 9 אנשים וכתב 10, ובפעם אחרת שכח את הבן וכתב 8. הנכון: 9
 FAMILY = [{"who": "אני", "count": 1}, {"who": "אחותי", "count": 1}, {"who": "הילדים של אחותי", "count": 3},
           {"who": "אחי", "count": 1}, {"who": "הילדים של אחי", "count": 2}, {"who": "הבן שלי", "count": 1}]
+
+
+class TestCourses(unittest.TestCase):
+    """מה יהיה בתפריט: המודל מחזיר כמה מנות מכל סוג, והקוד בודק ומציג."""
+
+    def test_chosen_courses_reach_the_request(self):
+        request, _ = build_request(parsed(courses={"starter": 1, "main": 1, "dessert": 2.0, "side": 0}))
+        self.assertEqual(request["courses"], {"starter": 1, "main": 1, "dessert": 2})
+        self.assertEqual(MenuRequest.from_dict(request).courses, {"starter": 1, "main": 1, "dessert": 2})
+
+    def test_nothing_said_means_default(self):
+        for courses in (None, {"main": 2, "side": 1, "vegetable": 1, "dessert": 1, "starter": 0}):
+            request, _ = build_request(parsed(courses=courses))
+            self.assertNotIn("courses", request)
+
+    def test_invalid_courses_are_sent_back(self):
+        result = _evaluate("10 איש, 200 שקל, 5 עיקריות", parsed(courses={"main": 5}), attempt=1)
+        self.assertTrue(any("עיקרית" in w for w in result.warnings), result.warnings)
+
+    def test_asking_for_a_course_means_only_that_course(self):
+        # מהצ'אט: "אני רוצה מנה ראשונה" הפך למנה ראשונה + כל התפריט הרגיל
+        everything = {"starter": 1, "main": 2, "side": 1, "vegetable": 1, "dessert": 1}
+        cases = [
+            ("אני רוצה מנה ראשונה עם אפונה, 20 שקל", everything, True),
+            ("אני רוצה מנה ראשונה עם אפונה, 20 שקל", {"starter": 1}, False),
+            ("10 איש, 200 שקל, גם מרק", everything, False),                            # "גם" - תוספת
+            ("10 איש, 200 שקל, בלי קינוח", {"main": 2, "side": 1, "vegetable": 1}, False),
+            ("מרק, עיקרית וסלט פירות, 200 שקל", {"starter": 1, "main": 1, "dessert": 1}, False),  # סלט פירות = קינוח
+            ("מרק, עיקרית וסלט פירות, 200 שקל", {"starter": 1, "main": 1, "vegetable": 1}, True),
+        ]
+        for text, courses, flagged in cases:
+            with self.subTest(text=text, courses=courses):
+                result = _evaluate(text, parsed(courses=courses), attempt=1)
+                self.assertEqual(any("courses" in w for w in result.warnings), flagged, result.warnings)
+
+    def test_liked_dish_is_not_a_course_request(self):
+        text = "10 איש, 200 שקל, אמא אוהבת מרק עוף, אני רוצה 2 עיקריות"
+        right = _evaluate(text, parsed([guest("אמא", likes=["מרק עוף"])], courses={"main": 2}), attempt=1)
+        self.assertFalse(any("courses" in w for w in right.warnings), right.warnings)
+        # והמרק שהיא אוהבת לא מצדיק להוסיף מנה ראשונה
+        wrong = _evaluate(text, parsed([guest("אמא", likes=["מרק עוף"])], courses={"starter": 1, "main": 2}), attempt=1)
+        self.assertTrue(any("courses" in w for w in wrong.warnings), wrong.warnings)
+
+    def test_change_is_described(self):
+        old = {"num_guests": 4, "budget": 300, "guests": []}
+        new = dict(old, courses={"starter": 1, "main": 2, "side": 1, "vegetable": 1, "dessert": 1})
+        self.assertEqual(describe_changes(old, new),
+                         ['תפריט: מ"2 עיקריות, תוספת, מנת ירקות, קינוח" ל"מנה ראשונה, 2 עיקריות, תוספת, מנת ירקות, קינוח"'])
+        self.assertEqual(describe_changes(new, new), [])
+
+
+class TestFoodGroupsAndComplaints(unittest.TestCase):
+
+    def test_split_group_is_collapsed_back(self):
+        # מהצ'אט: "לא אוהב עוף" הפך ל"חזה עוף, שוקי עוף, פרגיות"
+        split = parsed([guest("אני", dislikes=["חזה עוף", "שוקי עוף", "פרגיות", "פטריות"])])
+        result = _evaluate("10 איש, 200 שקל, אני לא אוהבת עוף ופטריות", split, attempt=1)
+        self.assertEqual(result.request["guests"][0]["dislikes"], ["פטריות", "עוף"])
+
+    def test_specific_ingredient_in_the_text_is_kept(self):
+        specific = parsed([guest("אני", dislikes=["חזה עוף"]), guest("רון", dislikes=["עוף"])])
+        result = _evaluate("10 איש, 200 שקל, אני לא אוהבת חזה עוף ורון לא אוהב עוף", specific, attempt=1)
+        self.assertEqual([g["dislikes"] for g in result.request["guests"]], [["חזה עוף"], ["עוף"]])
+
+    def test_update_does_not_widen_someone_elses_dislike(self):
+        previous = ParsedGoal("ok", request={"num_guests": 4, "budget": 300,
+                                             "guests": [guest("אני", dislikes=["חזה עוף"])]})
+        update = parsed([guest("אני", dislikes=["חזה עוף"]), guest("רון", dislikes=["עוף"])], num_guests=4,
+                        budget_total=300)
+        result = _evaluate("רון לא אוהב עוף", update, attempt=1, previous=previous)
+        self.assertEqual(result.request["guests"][0]["dislikes"], ["חזה עוף"])
+
+    def test_general_word_is_not_unknown(self):
+        request = {"guests": [guest(dislikes=["דגים", "גבינות", "עוף", "כוסברה"])]}
+        self.assertEqual(unknown_dislikes(request), ["כוסברה"])
+
+    def test_complaint_becomes_an_excluded_dish(self):
+        previous = ParsedGoal("ok", request={"num_guests": 3, "budget": 100, "guests": []})
+        client = FakeClient(submit(parsed(num_guests=3, budget_total=100, exclude_dishes=["מרק עוף"])))
+        result = parse_goal(client, "fake", "אבל יש עוף במנה הראשונה", previous=previous,
+                            menu=["מרק עדשים כתומות", "מרק עוף"])
+        self.assertIn("מרק עדשים כתומות, מרק עוף", client.requests[0][-1]["content"])  # המודל רואה את התפריט
+        self.assertEqual(result.request["exclude_dishes"], ["מרק עוף"])
+        self.assertEqual(result.changes, ["אחליף את: מרק עוף"])
+        self.assertEqual(MenuRequest.from_dict(result.request).exclude_dishes, ["מרק עוף"])
+
+    def test_unknown_excluded_dish_is_sent_back(self):
+        result = _evaluate("10 איש, 200 שקל, בלי המרק", parsed(exclude_dishes=["המרק"]), attempt=1)
+        self.assertTrue(any("המרק" in w for w in result.warnings), result.warnings)
 
 
 class TestGuestCount(unittest.TestCase):

@@ -21,10 +21,11 @@ from typing import Callable
 
 from openai import APIError, RateLimitError
 
-from chat_logic import diners, format_amount
+from chat_logic import compromise_note, diners, format_amount, portion_note
 from goal_parser import parse_goal, unknown_dislikes, unknown_likes
 from llm import ConfigError, ask_model, create_client, daily_quota_message, fallback_models
-from tools import ALLERGENS, CATEGORIES, DIETS, DataError, MenuRequest, MenuTools, load_json
+from tools import (ALLERGENS, CATEGORIES, COURSE_NAMES, DIETS, DataError, MenuRequest, MenuTools, describe_courses,
+                   load_json, menu_dishes)
 
 MAX_STEPS = 15         # מגבלת קריאות למודל - מונעת לולאה אינסופית ועלות לא צפויה
 MAX_NUDGES = 1         # כמה פעמים להזכיר למודל להמשיך אם עצר בלי לסיים
@@ -35,14 +36,16 @@ DEFAULT_REQUEST = Path(__file__).parent / "examples" / "friday_dinner.json"
 SYSTEM_PROMPT = """אתה אג'נט שמתכנן תפריט לארוחה משפחתית.
 המטרה: להרכיב תפריט שעומד בתקציב ומתאים לכל האורחים, ולקבל עליו אישור מהכלי finalize_menu.
 
-מבנה התפריט: 2 מנות עיקריות שונות (mains), תוספת אחת (side), מנת ירקות אחת (vegetable) וקינוח אחד (dessert).
+מבנה התפריט: המשתמש בחר כמה מנות יהיו מכל סוג (מופיע במטרה, "תפריט:"). בכל סוג - בדיוק המספר הזה, כולן שונות.
+סוגי המנות: starter (מנה ראשונה), main (עיקרית), side (תוספת), vegetable (ירקות), dessert (קינוח).
+התפריט נשלח לכלים כרשימה לכל סוג שבתפריט, גם כשיש מנה אחת: {"main": ["א", "ב"], "dessert": ["ג"]}.
 מותר לבחור רק מנות שהופיעו בתוצאות של search_recipes, בדיוק בשם שהופיע שם.
 
-כללי האורחים:
-- אילוצי חובה (אלרגיה, צמחוני/טבעוני): לכל אורח חייבת להיות לפחות מנה עיקרית אחת שמותר לו לאכול.
-  התוספת, הירקות והקינוח חייבים להתאים לכל האורחים.
-- העדפות (מרכיבים שאורח לא אוהב): לכל אורח צריכה להיות מנה עיקרית שמותר לו לאכול ושאין בה מרכיב שהוא לא אוהב,
-  ולכל היותר מנה אחת מהשאר עם מרכיב שהוא לא אוהב.
+כללי האורחים (לכל סוג מנה בנפרד):
+- אילוצי חובה (אלרגיה, צמחוני/טבעוני): בכל סוג מנה, לכל אורח חייבת להיות לפחות מנה אחת שמותר לו לאכול.
+  כשיש רק מנה אחת מסוג מסוים - היא חייבת להתאים לכל האורחים.
+- העדפות (מרכיבים שאורח לא אוהב): לכל אורח צריכה להיות מנה עיקרית שמותר לו לאכול ושאין בה מרכיב שהוא לא אוהב.
+  מבין שאר סוגי המנות - לכל היותר סוג אחד שבו כל מה שמותר לו מכיל מרכיב שהוא לא אוהב.
 - כשרות (רק אם נאמר שהארוחה כשרה): אסור שיהיו בתפריט גם מנה בשרית וגם מנה חלבית. search_recipes מחזיר
   לכל מנה kashrut (meat/dairy/parve), ו-check_guests מדווח על הפרה כזו.
 - אוהב/ת (העדפה רכה): נסה לכלול מנה עם מה שהאורח אוהב - אבל רק אם התפריט עדיין עומד בכל הכללים
@@ -58,7 +61,7 @@ SYSTEM_PROMPT = """אתה אג'נט שמתכנן תפריט לארוחה משפ�
   suggest_swaps מראה לכל מנה אילו מנות אפשר לשים במקומה בלי לפגוע באורחים, ומה תהיה העלות אחרי ההחלפה -
   השתמש בו כדי להחליט מה להחליף, במקום לנחש.
   ההחלפות שהוא מציע כבר נבדקו מול כל האורחים, ו-new_total הוא העלות אחרי ההחלפה - אין צורך לבדוק אותן שוב.
-  החלפות בתוספת, בירקות ובקינוח לא משפיעות זו על זו, אז אפשר לבצע כמה מהן יחד ולבדוק פעם אחת.
+  החלפות בסוגי מנות שונים בדרך כלל לא משפיעות זו על זו, אז אפשר לבצע כמה מהן יחד ולבדוק פעם אחת.
 - אם יש יעד תקציב ("בערך"), calculate_cost מחזיר גם within_target. העדף תפריט ביעד; תפריט מעל היעד ועד
   התקציב המקסימלי - רק אחרי ש-suggest_swaps הראה שאין דרך להוזיל אותו ליעד.
 - המשימה מסתיימת בהצלחה רק כש-finalize_menu מחזיר approved=true.
@@ -68,15 +71,9 @@ SYSTEM_PROMPT = """אתה אג'נט שמתכנן תפריט לארוחה משפ�
 
 _MENU_SCHEMA = {
     "type": "object",
-    "description": "התפריט המלא",
-    "properties": {
-        "mains": {"type": "array", "items": {"type": "string"},
-                  "description": "בדיוק 2 מנות עיקריות שונות"},
-        "side": {"type": "string", "description": "תוספת אחת"},
-        "vegetable": {"type": "string", "description": "מנת ירקות אחת"},
-        "dessert": {"type": "string", "description": "קינוח אחד"},
-    },
-    "required": ["mains", "side", "vegetable", "dessert"],
+    "description": "התפריט המלא: רשימת מנות לכל סוג שבתפריט, בדיוק כמה שהמשתמש ביקש מכל סוג",
+    "properties": {c: {"type": "array", "items": {"type": "string"}, "description": COURSE_NAMES[c][1]}
+                   for c in CATEGORIES},
 }
 
 
@@ -138,9 +135,13 @@ def describe_request(request: MenuRequest) -> str:
     if request.target_budget is not None:
         budget = (f"תקציב: בערך {request.target_budget:g} ש\"ח - נסה להישאר ב-{request.target_budget:g}, "
                   f"מותר עד {request.budget:g} רק אם אין ברירה")
-    lines = [f"מספר סועדים: {request.num_guests}", budget]
+    courses = ", ".join(f"{n} {c}" for c, n in request.courses.items())
+    lines = [f"מספר סועדים: {request.num_guests}", budget,
+             f"תפריט: {describe_courses(request.courses)} ({courses})"]
     if request.kosher:
         lines.append("ארוחה כשרה: בלי מנה בשרית ומנה חלבית באותו תפריט (פרווה ודגים - מותר עם הכל)")
+    if request.exclude_dishes:
+        lines.append("המשתמש ביקש שהמנות האלה לא יהיו בתפריט: " + ", ".join(request.exclude_dishes))
     if request.guests:
         lines.append("אורחים עם אילוצים:")
     for g in request.guests:
@@ -312,8 +313,7 @@ def short_args(args) -> str:
         return repr(args)
     menu = args.get("menu")
     if isinstance(menu, dict):
-        dishes = list(menu.get("mains") or []) + [menu.get(k) for k in ("side", "vegetable", "dessert")]
-        return " | ".join(str(d) for d in dishes if d)
+        return " | ".join(str(d) for d in menu_dishes(menu))
     return ", ".join(f"{k}={v}" for k, v in args.items())
 
 
@@ -373,17 +373,16 @@ def print_success(approved: dict):
     menu = approved["menu"]
     print("\n" + "═" * 50)
     print("✅ התפריט אושר\n")
-    print(f"  עיקריות: {menu['mains'][0]}, {menu['mains'][1]}")
-    print(f"  תוספת:   {menu['side']}")
-    print(f"  ירקות:   {menu['vegetable']}")
-    print(f"  קינוח:   {menu['dessert']}")
+    for category in CATEGORIES:
+        if menu.get(category):
+            print(f"  {CATEGORIES[category]}: {', '.join(menu[category])}")
     print(f"\n  עלות: {approved['total_cost']:.2f} ש\"ח ({approved['cost_per_guest']:.2f} לסועד)")
     for like in approved.get("likes", []):
         where = f"✓ ב{', '.join(like['dishes'])}" if like["in_menu"] else f"✗ לא נכנס: {like.get('reason', '')}"
         print(f"  {'❤️' if like['in_menu'] else '🤍'} {like['guest']} אוהב/ת {like['likes']}: {where}")
     for item in approved.get("compromises", []):
         print(f"  🔸 {item['guest']} לא אוהב/ת {item['dislikes']}, ויש ב{item['dish']} "
-              f"(מותר עד מנה אחת): {item['reason']}")
+              f"({compromise_note(item)}): {item['reason']}")
     print("\n🛒 רשימת קניות:")
     for item in approved["shopping_list"]:
         print(f"  • {item['item']}: {item['needed']:g} {item['unit']} "
@@ -394,10 +393,10 @@ def print_recipes(tools: MenuTools):
     """המתכונים של התפריט שאושר, עם כמויות לפי מספר הסועדים."""
     menu = tools.approved_menu["menu"]
     print("\n📖 מתכונים:")
-    for dish in [*menu["mains"], menu["side"], menu["vegetable"], menu["dessert"]]:
+    for dish in menu_dishes(menu):
         card = tools.recipe_card(dish)
-        portion = " (60% מנה לסועד, כי יש שתי עיקריות)" if card["main_portion"] else ""
-        print(f"\n  🍳 {card['name']} - {card['time_minutes']} דקות, {diners(card['num_guests'], 'ל')}{portion}")
+        print(f"\n  🍳 {card['name']} - {card['time_minutes']} דקות, {diners(card['num_guests'], 'ל')}"
+              f"{portion_note(card)}")
         print("  מצרכים:")
         for ing in card["ingredients"]:
             print(f"    - {format_amount(ing['amount'], ing['unit'])} {ing['name']}")

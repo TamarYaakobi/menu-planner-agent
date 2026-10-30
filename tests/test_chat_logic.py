@@ -15,8 +15,8 @@ from chat_logic import (cost_answer, delete_conversation, diners, format_amount,
 from goal_parser import ParsedGoal  # noqa: E402
 from tools import DATA_DIR, MenuRequest, MenuTools, load_json  # noqa: E402
 
-MENU = {"mains": ["שניצל עוף", "קארי עדשים בחלב קוקוס"], "side": "מג'דרה",
-        "vegetable": "סלט ירקות קצוץ", "dessert": "סלט פירות"}
+MENU = {"main": ["שניצל עוף", "קארי עדשים בחלב קוקוס"], "side": ["מג'דרה"],
+        "vegetable": ["סלט ירקות קצוץ"], "dessert": ["סלט פירות"]}
 
 
 class TestHtml(unittest.TestCase):
@@ -87,8 +87,8 @@ class TestCostQuestions(unittest.TestCase):
             self.assertFalse(is_cost_question(text), text)
 
     def test_answer_matches_the_tools(self):
-        menu = {"mains": ["עוף בתנור עם תפוחי אדמה", "קארי עדשים בחלב קוקוס"], "side": "תפוחי אדמה אפויים ברוזמרין",
-                "vegetable": "סלט חסה עם אגוזי מלך", "dessert": "סלט פירות"}
+        menu = {"main": ["עוף בתנור עם תפוחי אדמה", "קארי עדשים בחלב קוקוס"], "side": ["תפוחי אדמה אפויים ברוזמרין"],
+                "vegetable": ["סלט חסה עם אגוזי מלך"], "dessert": ["סלט פירות"]}
         request = {"num_guests": 10, "budget": 1000, "guests": []}
         tools = MenuTools(MenuRequest.from_dict(request))
         approved = tools.finalize_menu(menu)
@@ -106,7 +106,7 @@ class TestRecipeRequests(unittest.TestCase):
         self.assertFalse(wants_recipes("בלי סלמון"))
 
     def test_which_dishes(self):
-        all_dishes = MENU["mains"] + [MENU["side"], MENU["vegetable"], MENU["dessert"]]
+        all_dishes = MENU["main"] + MENU["side"] + MENU["vegetable"] + MENU["dessert"]
         cases = {
             "תביא לי את המתכונים": all_dishes,
             "מתכון לשניצל": ["שניצל עוף"],                      # "לשניצל" - קידומת של אות אחת
@@ -114,7 +114,7 @@ class TestRecipeRequests(unittest.TestCase):
             "איך מכינים את הקארי?": ["קארי עדשים בחלב קוקוס"],
             "את המתכון של הסלט": ["סלט ירקות קצוץ"],            # "סלט" = מנת הירקות, לא גם סלט הפירות
             "מתכון לסלט הפירות": ["סלט פירות"],                 # אבל "סלט הפירות" = הקינוח בלבד
-            "מתכונים לעיקריות": MENU["mains"],
+            "מתכונים לעיקריות": MENU["main"],
             "מתכון למג'דרה ולשניצל": ["מג'דרה", "שניצל עוף"],   # גרש בתוך המילה
         }
         for text, expected in cases.items():
@@ -156,6 +156,23 @@ class TestRecipeFormatting(unittest.TestCase):
         self.assertAlmostEqual(card["ingredients"][0]["amount"], 180 * 10 * 0.6)  # חזה עוף: 180 גרם למנה
         self.assertIn("60% מנה", format_recipe(card))
 
+    def test_portion_follows_the_chosen_courses(self):
+        # עיקרית אחת - מנה שלמה. שלושה קינוחים - 40% מכל אחד
+        request = MenuRequest.from_dict({"num_guests": 10, "budget": 500, "courses": {"main": 1, "dessert": 3}})
+        tools = MenuTools(request)
+        main, dessert = tools.recipe_card("שניצל עוף"), tools.recipe_card("סלט פירות")
+        self.assertAlmostEqual(main["ingredients"][0]["amount"], 180 * 10)
+        self.assertNotIn("% מנה", format_recipe(main))
+        self.assertAlmostEqual(dessert["ingredients"][0]["amount"], 80 * 10 * 0.4)
+        self.assertIn("40% מנה לסועד, כי יש 3 קינוחים", format_recipe(dessert))
+
+    def test_starter_recipe(self):
+        cases = {"מתכון למרק": ["מרק עוף"], "מתכון למנה הראשונה": ["מרק עוף"]}
+        menu = dict(MENU, starter=["מרק עוף"])
+        for text, expected in cases.items():
+            with self.subTest(text):
+                self.assertEqual(requested_dishes(text, menu), expected)
+
     def test_unknown_dish(self):
         tools = MenuTools(MenuRequest.from_dict({"num_guests": 5, "budget": 500}))
         self.assertIn("error", tools.recipe_card("פיצה"))
@@ -183,6 +200,19 @@ class TestHistoryStorage(unittest.TestCase):
         self.assertEqual(loaded["goal"], goal)  # חוזר כ-ParsedGoal, לא כ-dict
         self.assertEqual(loaded["stage"], "confirm")
         self.assertEqual(list_conversations()[0]["title"], "4 איש, 300 שקל")
+
+    def test_old_menu_format_is_upgraded(self):
+        # שיחות מלפני שאפשר היה לבחור סוגי מנות: "mains" ומחרוזת לכל סוג אחר
+        old = {"mains": MENU["main"], "side": "מג'דרה", "vegetable": "סלט ירקות קצוץ", "dessert": "סלט פירות"}
+        request = {"num_guests": 4, "budget": 300, "guests": []}
+        state = self.state({"role": "user", "content": "4 איש"})
+        state.update(menu={"approved": {"menu": old, "total_cost": 50, "shopping_list": []}, "request": request},
+                     previous_menu={"menu": dict(old), "total_cost": 50})
+        save_conversation("old", state)
+        loaded = load_conversation("old")
+        self.assertEqual(loaded["menu"]["approved"]["menu"], MENU)
+        self.assertEqual(loaded["previous_menu"]["menu"], MENU)
+        self.assertIn("מג'דרה", cost_answer(loaded["menu"]))  # והוא עובד עם הכלים
 
     def test_no_user_message_not_saved(self):
         save_conversation("a1", self.state())

@@ -22,13 +22,15 @@ from chat_logic import (STATE_KEYS, cost_answer, delete_conversation, diners, fo
 from hebrew_page import mark_page_hebrew
 from goal_parser import parse_goal, unknown_dislikes, unknown_likes
 from llm import ConfigError, create_client, daily_quota_message, fallback_models
-from tools import ALLERGENS, DIETS, MenuRequest, MenuTools
+from tools import ALLERGENS, DIETS, MenuRequest, MenuTools, describe_courses, menu_dishes
 
 WELCOME = """היי! אני אג'נט שמתכנן תפריט לארוחה 🍽️
 
 ספרי לי מי מגיע, מה התקציב, ומה כל אחד אוכל או לא אוכל. למשל:
 
 > *אני מארחת 10 איש בשישי, יש לי בערך 150 ש"ח. אחותי טבעונית, הבן שלה אלרגי לאגוזים, ואבא שלי לא אוהב פטריות.*
+
+אפשר גם לבחור מה יהיה בתפריט - למשל *"מרק, עיקרית אחת ושני קינוחים"*. אם לא תגידי, אתכנן 2 עיקריות, תוספת, סלט וקינוח.
 
 אני אגיד לך איך הבנתי, ואחרי שתאשרי - אתכנן תפריט שעומד בתקציב, עם רשימת קניות ומתכונים."""
 
@@ -151,9 +153,11 @@ def describe_goal(goal) -> str:
     budget = f"תקציב {request.budget:g} ש\"ח"
     if request.target_budget is not None:
         budget = f"תקציב בערך {request.target_budget:g} ש\"ח (עד {request.budget:g} אם אין ברירה)"
-    lines = [f"**{diners(request.num_guests)}, {budget}**"]
+    lines = [f"**{diners(request.num_guests)}, {budget}**", f"🍽️ בתפריט: {describe_courses(request.courses)}"]
     if request.kosher or st.session_state.kosher:
         lines.append("🕍 ארוחה כשרה - בלי בשר וחלב יחד")
+    if request.exclude_dishes:
+        lines.append(f"🚫 בלי: {', '.join(request.exclude_dishes)}")
     for g in request.guests:
         parts = [f"אלרגיה ל{', '.join(ALLERGENS[a] for a in g.allergies)}" if g.allergies else "",
                  DIETS[g.diet] if g.diet else "",
@@ -186,9 +190,11 @@ def understand(text: str):
     try:
         client, default_model = create_client()
         with st.spinner("קוראת את הבקשה..."):
+            shown = st.session_state.menu["approved"]["menu"] if st.session_state.menu else None
             goal = parse_goal(client, st.session_state.model or default_model,
                               text if previous else st.session_state.goal_text,
-                              fallbacks=fallback_models(), previous=previous)
+                              fallbacks=fallback_models(), previous=previous,
+                              menu=menu_dishes(shown) if shown else None)
     except ConfigError as e:
         return say(f"❌ {e}")
     except APIError as e:
@@ -307,7 +313,7 @@ def show_recipes(text: str):
 
 
 NEXT_STEPS = ('<div class="hint">📖 <b>רוצה מתכונים?</b> כתבי "מתכונים", או למשל "מתכון לקינוח". '
-              'אפשר גם לשנות משהו - "בלי סלמון", "התקציב בעצם 200" - או לשאול "כמה זה יוצא לסועד?"</div>')
+              'אפשר גם לשנות משהו - "בלי סלמון", "התקציב בעצם 200", "תוסיף מנה ראשונה" - או לשאול "כמה זה יוצא לסועד?"</div>')
 
 
 # ---------- הדף ----------

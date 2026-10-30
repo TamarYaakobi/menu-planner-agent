@@ -20,7 +20,10 @@ from pathlib import Path
 
 DATA_DIR = Path(__file__).parent / "data"
 
-CATEGORIES = {"main": "עיקרית", "side": "תוספת", "vegetable": "ירקות", "dessert": "קינוח"}
+CATEGORIES = {"starter": "מנה ראשונה", "main": "עיקרית", "side": "תוספת", "vegetable": "ירקות", "dessert": "קינוח"}
+# לתיאור התפריט למשתמש: (אחת, כמה)
+COURSE_NAMES = {"starter": ("מנה ראשונה", "מנות ראשונות"), "main": ("עיקרית", "עיקריות"),
+                "side": ("תוספת", "תוספות"), "vegetable": ("מנת ירקות", "מנות ירקות"), "dessert": ("קינוח", "קינוחים")}
 ALLERGENS = {"gluten": "גלוטן", "eggs": "ביצים", "dairy": "חלב", "nuts": "אגוזים", "fish": "דגים",
              "peanuts": "בוטנים", "sesame": "שומשום", "soy": "סויה"}
 DIETS = {"vegetarian": "צמחונית", "vegan": "טבעונית"}
@@ -39,12 +42,43 @@ def kashrut(recipe: dict) -> str:
         return "meat"
     return "parve"
 
-# יש שתי מנות עיקריות, ואף אחד לא אוכל שתי מנות מלאות - מחשבים 60% מנה מכל אחת
-MAIN_PORTION_FACTOR = 0.6
-# כמה מנות שאינן עיקריות מותר שיהיו לאורח שהוא לא אוהב
+# מה יש בתפריט כשהמשתמש לא אמר: כמה מנות מכל סוג
+DEFAULT_COURSES = {"main": 2, "side": 1, "vegetable": 1, "dessert": 1}
+MAX_PER_COURSE = 3
+# כשיש כמה מנות מאותו סוג, כל סועד לוקח קצת מכל אחת - ביחד 1.2 מנות (שתי עיקריות: 60% מכל אחת)
+SHARED_PORTIONS = 1.2
+# בכמה סוגי מנות (חוץ מהעיקריות) מותר שכל מה שאורח יכול לאכול יכיל משהו שהוא לא אוהב
 MAX_DISLIKED_NON_MAIN = 1
-# חמשת המקומות בתפריט: (שדה, אינדקס ברשימה או None)
-MENU_SLOTS = (("mains", 0), ("mains", 1), ("side", None), ("vegetable", None), ("dessert", None))
+
+
+def portion(dishes_of_kind: int) -> float:
+    """כמה מנה מכל מנה מחשבים לסועד, לפי מספר המנות מאותו סוג."""
+    return 1.0 if dishes_of_kind <= 1 else SHARED_PORTIONS / dishes_of_kind
+
+
+def describe_courses(courses: dict) -> str:
+    """{"main": 2, "dessert": 1} -> "2 עיקריות, קינוח" """
+    return ", ".join(COURSE_NAMES[c][0] if n == 1 else f"{n} {COURSE_NAMES[c][1]}" for c, n in courses.items())
+
+
+def menu_dishes(menu: dict) -> list[str]:
+    """כל המנות בתפריט, לפי סדר הארוחה."""
+    return [d for c in CATEGORIES if isinstance(menu.get(c), list) for d in menu[c]]
+
+
+# מילה כללית ("לא אוהב עוף") -> מה נחשב כזה במאגר. חיפוש פשוט של "עוף" לא תופס "פרגיות",
+# ו"דגים" לא מופיע בשם של אף מרכיב. מילה ספציפית ("חזה עוף") נשארת ספציפית
+FOOD_GROUPS = {word: members for words, members in (
+    (("עוף", "עופות"), ("עוף", "פרגיות")),
+    (("דג", "דגים"), ("דג", "סלמון", "אמנון")),
+    (("גבינה", "גבינות"), ("גבינ", "פרמזן", "מוצרלה")),
+    (("אגוז", "אגוזים"), ("אגוז", "שקדים")),
+) for word in words}
+
+
+def mentions(word: str, name: str) -> bool:
+    """האם "עוף" / "פטריות" מתאים לשם המרכיב או המנה ("פרגיות", "פטריות שמפיניון")."""
+    return any(part in name for part in FOOD_GROUPS.get(word, (word,)))
 
 
 class DataError(Exception):
@@ -82,7 +116,7 @@ class Guest:
     def liked_in(self, recipe: dict) -> list[str]:
         """מה מהדברים שהאורח אוהב יש במנה - לפי שם המנה ("שקשוקה") או מרכיב ("חסה")."""
         names = [recipe["name"]] + [ing["name"] for ing in recipe["ingredients"]]
-        return [like for like in self.likes if any(like in n for n in names)]
+        return [like for like in self.likes if any(mentions(like, n) for n in names)]
 
     def hard_conflicts(self, recipe: dict) -> list[str]:
         """הסיבות שבגללן האורח *לא יכול* לאכול את המנה (רשימה ריקה = יכול)."""
@@ -92,9 +126,9 @@ class Guest:
         return reasons
 
     def disliked_ingredients(self, recipe: dict) -> list[str]:
-        """מרכיבים במנה שהאורח לא אוהב. "פטריות" תתפוס גם "פטריות שמפיניון"."""
+        """מרכיבים במנה שהאורח לא אוהב. "פטריות" תתפוס גם "פטריות שמפיניון", ו"עוף" גם "פרגיות"."""
         return [ing["name"] for ing in recipe["ingredients"]
-                if any(d in ing["name"] for d in self.dislikes)]
+                if any(mentions(d, ing["name"]) for d in self.dislikes)]
 
 
 @dataclass
@@ -104,6 +138,8 @@ class MenuRequest:
     guests: list[Guest] = field(default_factory=list)  # רק אורחים עם אילוצים או העדפות
     target_budget: float | None = None                 # "בערך 400": היעד. מותר לעבור אותו עד budget
     kosher: bool = False                               # בלי בשר וחלב באותה ארוחה
+    courses: dict = field(default_factory=lambda: dict(DEFAULT_COURSES))  # כמה מנות מכל סוג, לפי סדר הארוחה
+    exclude_dishes: list[str] = field(default_factory=list)  # מנות שהמשתמש ביקש להחליף ("אבל יש מרק עוף")
 
     @classmethod
     def from_dict(cls, data: dict) -> MenuRequest:
@@ -152,7 +188,29 @@ class MenuRequest:
         kosher = data.get("kosher", False)
         if not isinstance(kosher, bool):
             raise ValueError("kosher צריך להיות true או false")
-        return cls(num_guests, float(budget), guests, target, kosher)
+        exclude = data.get("exclude_dishes", [])
+        if not isinstance(exclude, list) or not all(isinstance(x, str) for x in exclude):
+            raise ValueError("exclude_dishes צריך להיות רשימה של שמות מנות")
+        return cls(num_guests, float(budget), guests, target, kosher, _courses(data.get("courses")),
+                   [x.strip() for x in exclude if x.strip()])
+
+
+def _courses(value) -> dict:
+    """{"main": 2, "dessert": 1} -> אותו דבר, לפי סדר הארוחה ובלי סוגים עם 0. None = ברירת המחדל."""
+    if value is None:
+        return dict(DEFAULT_COURSES)
+    if not isinstance(value, dict):
+        raise ValueError('courses צריך להיות אובייקט: כמה מנות מכל סוג, למשל {"main": 2, "dessert": 1}')
+    bad = [c for c in value if c not in CATEGORIES]
+    if bad:
+        raise ValueError(f"סוג מנה לא מוכר: {bad}. אפשרויות: {list(CATEGORIES)}")
+    for c, n in value.items():
+        if not isinstance(n, int) or isinstance(n, bool) or not 0 <= n <= MAX_PER_COURSE:
+            raise ValueError(f"מספר המנות מסוג {CATEGORIES[c]} צריך להיות בין 0 ל-{MAX_PER_COURSE}")
+    courses = {c: value[c] for c in CATEGORIES if value.get(c)}
+    if not courses:
+        raise ValueError("בתפריט צריכה להיות לפחות מנה אחת")
+    return courses
 
 
 # ---------- הכלים ----------
@@ -170,6 +228,8 @@ class MenuTools:
         self.prices = prices if prices is not None else load_json(DATA_DIR / "prices.json")
         self.recipes = {r["name"]: r for r in recipes}
         self.approved_menu: dict | None = None  # מתמלא רק כש-finalize_menu מאשר
+        # המקומות בתפריט: (סוג, מספר המנה מהסוג הזה)
+        self.slots = [(c, i) for c, n in request.courses.items() for i in range(n)]
         self._check_data()
 
     def _check_data(self):
@@ -210,10 +270,12 @@ class MenuTools:
                 continue
             if diet and diet not in r["diet"]:
                 continue
-            names = [ing["name"] for ing in r["ingredients"]]
-            if any(x in n for x in exclude_ingredients for n in names):
+            if r["name"] in self.request.exclude_dishes:
                 continue
-            if include_any and not any(x in n for x in include_any for n in names + [r["name"]]):
+            names = [ing["name"] for ing in r["ingredients"]]
+            if any(mentions(x, n) for x in exclude_ingredients for n in names):
+                continue
+            if include_any and not any(mentions(x, n) for x in include_any for n in names + [r["name"]]):
                 continue
             results.append({"name": r["name"], "allergens": r["allergens"], "kashrut": kashrut(r),
                             "diet": r["diet"], "ingredients": names})
@@ -263,32 +325,37 @@ class MenuTools:
         if errors:
             return {"error": "התפריט לא תקין", "details": errors}
 
-        mains = [r for r in dishes if r["category"] == "main"]
-        others = [r for r in dishes if r["category"] != "main"]
+        courses = {c: [r for r in dishes if r["category"] == c] for c in self.request.courses}
         violations = []
 
         def add(guest, kind, problem):
             violations.append({"guest": guest.name, "type": kind, "problem": problem})
 
         for g in self.request.guests:
-            # עיקריות: מספיק שאחת מהשתיים מתאימה
-            edible_mains = [m for m in mains if not g.hard_conflicts(m)]
-            if not edible_mains:
-                why = "; ".join(f"{m['name']}: {', '.join(g.hard_conflicts(m))}" for m in mains)
-                add(g, "hard", f"אין אף מנה עיקרית שמותר לאכול ({why})")
-            elif all(g.disliked_ingredients(m) for m in edible_mains):
-                add(g, "soft", "המנה העיקרית היחידה שמותר לאכול מכילה מרכיב לא אהוב")
+            # בכל סוג מנה מספיק שאחת המנות מתאימה. כשיש רק מנה אחת מסוג מסוים - היא חייבת להתאים לכולם
+            disliked = []  # מנות מסוגים (חוץ מעיקריות) שבהם כל מה שמותר לאורח מכיל משהו שהוא לא אוהב
+            for category, kind in courses.items():
+                edible = [r for r in kind if not g.hard_conflicts(r)]
+                if not edible:
+                    if len(kind) == 1:
+                        add(g, "hard", f"אסור לאכול את '{kind[0]['name']}': {', '.join(g.hard_conflicts(kind[0]))}")
+                    else:
+                        why = "; ".join(f"{r['name']}: {', '.join(g.hard_conflicts(r))}" for r in kind)
+                        add(g, "hard", f"אין אף מנה מסוג {CATEGORIES[category]} שמותר לאכול ({why})")
+                elif all(g.disliked_ingredients(r) for r in edible):
+                    if category == "main":
+                        add(g, "soft", "כל המנות העיקריות שמותר לאכול מכילות מרכיב לא אהוב")
+                    else:
+                        disliked += [r["name"] for r in edible]
 
-            # שאר המנות: יש רק אחת מכל סוג, אז כל אחת חייבת להתאים לכולם
-            for r in others:
-                conflicts = g.hard_conflicts(r)
-                if conflicts:
-                    add(g, "hard", f"אסור לאכול את '{r['name']}': {', '.join(conflicts)}")
-
-            disliked = [r["name"] for r in others if g.disliked_ingredients(r)]
-            if len(disliked) > MAX_DISLIKED_NON_MAIN:
+            if len({self.recipes[d]["category"] for d in disliked}) > MAX_DISLIKED_NON_MAIN:
                 add(g, "soft", f"יותר מדי מנות עם מרכיבים לא אהובים: {disliked} "
-                               f"(מותר עד {MAX_DISLIKED_NON_MAIN})")
+                               f"(מותר עד סוג מנה אחד, חוץ מהעיקריות)")
+
+        for r in dishes:
+            if r["name"] in self.request.exclude_dishes:
+                violations.append({"guest": "בקשת המשתמש", "type": "hard",
+                                   "problem": f"המשתמש ביקש להחליף את '{r['name']}'"})
 
         # כשרות: אילוץ על כל התפריט, לא על אורח מסוים
         if self.request.kosher:
@@ -320,7 +387,7 @@ class MenuTools:
     def preferences_report(self, menu: dict) -> dict:
         """
         likes: כל "אוהב/ת" - האם בתפריט, ואם לא - למה.
-        compromises: "לא אוהב/ת" שבכל זאת יש בתפריט (מותר עד מנה אחת) - ולמה לא הוחלף.
+        compromises: כל מנה בתפריט שמישהו לא אוהב, ומה יש לו במקומה מאותו סוג (alternative) - ולמה לא הוחלפה.
         הסיבה נבדקת בקוד: מנסים לשים בתפריט מנה מתאימה, ובודקים מה היה נשבר.
         """
         dishes, _ = self._parse_menu(menu)
@@ -336,12 +403,16 @@ class MenuTools:
         compromises = []
         for g in self.request.guests:
             for r in dishes:
-                if r["category"] == "main" or not g.disliked_ingredients(r):
-                    continue  # בעיקריות - יש לו את השנייה. כאן: מנה שכולם אוכלים
+                if not g.disliked_ingredients(r) or g.hard_conflicts(r):
+                    continue
+                # גם כשיש לו מנה אחרת מאותו סוג - מראים: בצ'אט, "מרק עוף" לצד מרק עדשים עבר בשקט,
+                # למרות שהמארחת לא אוהבת עוף והיה מרק זול יותר שכולם אוכלים
+                alternative = [x["name"] for x in dishes if x["category"] == r["category"]
+                               and not g.hard_conflicts(x) and not g.disliked_ingredients(x)]
                 disliked = ", ".join(g.disliked_ingredients(r))
                 options = [x for x in self.recipes.values()
                            if x["category"] == r["category"] and x["name"] != r["name"] and not g.disliked_ingredients(x)]
-                compromises.append({"guest": g.name, "dislikes": disliked, "dish": r["name"],
+                compromises.append({"guest": g.name, "dislikes": disliked, "dish": r["name"], "alternative": alternative,
                                     "reason": self._why_not(menu, options, f"אין חלופה בלי {disliked}")})
         return {"likes": likes, "compromises": compromises}
 
@@ -358,15 +429,14 @@ class MenuTools:
 
     def _try_dish(self, menu: dict, recipe: dict) -> tuple[int, str]:
         """
-        מה קורה אם שמים את המנה בתפריט (במקום המנה מאותה קטגוריה; בעיקריות - במקום אחת מהשתיים).
+        מה קורה אם שמים את המנה בתפריט (במקום אחת המנות מאותו סוג).
         מחזיר (דירוג, הסבר): 0 עובד, 1 מעל היעד, 2 מעל התקציב, 3 "לא אוהב", 4 אלרגיה/תזונה, 5 חסר מחיר.
         """
-        slots = [s for s in MENU_SLOTS if self.recipes[self._dish_at(menu, s)]["category"] == recipe["category"]]
         results = []
-        for slot in slots:
-            candidate = self._replace(menu, *slot, recipe["name"])
-            if candidate["mains"][0] == candidate["mains"][1]:
+        for slot in self.slots:
+            if slot[0] != recipe["category"] or recipe["name"] in menu[slot[0]]:
                 continue
+            candidate = self._replace(menu, slot, recipe["name"])
             cost = self.calculate_cost(candidate)
             violations = self.check_guests(candidate)["violations"]
             hard = [v for v in violations if v["type"] == "hard"]
@@ -396,6 +466,8 @@ class MenuTools:
                 results.append((1, f"{name}: התפריט היה עולה {cost['total_cost']:.0f} ש\"ח - מעל היעד"))
             else:
                 results.append((0, f"עם {name} התפריט היה עולה {cost['total_cost']:.0f} ש\"ח"))
+        if not results and recipe["category"] not in self.request.courses:
+            return 6, f"{recipe['name']} היא {CATEGORIES[recipe['category']]}, ואין {CATEGORIES[recipe['category']]} בתפריט שביקשו"
         return min(results) if results else (6, f"{recipe['name']}: אין מקום בתפריט")
 
     # --- כלי 4 ---
@@ -444,18 +516,18 @@ class MenuTools:
             return {"error": "התפריט לא תקין", "details": errors}
 
         current = self.calculate_cost(menu)
-        alternatives = {slot: self._alternatives(menu, slot) for slot in MENU_SLOTS}
+        alternatives = {slot: self._alternatives(menu, slot) for slot in self.slots}
         suggestions = []
-        for slot in MENU_SLOTS:
+        for slot in self.slots:
             options = []
             for dish in alternatives[slot]:
-                total = self._valid_total(self._replace(menu, *slot, dish))
+                total = self._valid_total(self._replace(menu, slot, dish))
                 if total is not None:
                     options.append({"dish": dish, "new_total": total,
                                     "saving": round(current["total_cost"] - total, 2)})
             options.sort(key=lambda o: o["new_total"])
             replaced = self._dish_at(menu, slot)
-            suggestions.append({"replace": replaced, "category": self.recipes[replaced]["category"],
+            suggestions.append({"replace": replaced, "category": slot[0],
                                 "options": options[:3]})
 
         cheaper = [(o, s["replace"]) for s in suggestions for o in s["options"] if o["saving"] > 0]
@@ -489,7 +561,8 @@ class MenuTools:
             "category": recipe["category"],
             "time_minutes": recipe.get("time_minutes"),
             "num_guests": self.request.num_guests,
-            "main_portion": recipe["category"] == "main",  # 60% מנה לסועד - יש שתי עיקריות
+            "portion": self._portion(recipe),  # פחות ממנה שלמה כשיש כמה מנות מאותו סוג
+            "same_kind": self.request.courses.get(recipe["category"], 1),
             "ingredients": [{"name": ing["name"], "amount": ing["amount"] * servings, "unit": ing["unit"]}
                             for ing in recipe["ingredients"]],
             "steps": recipe.get("steps", []),
@@ -499,9 +572,9 @@ class MenuTools:
 
     def _best_double_swap(self, menu: dict, current_total: float, alternatives: dict) -> dict | None:
         best = None
-        for slot_a, slot_b in combinations(MENU_SLOTS, 2):
+        for slot_a, slot_b in combinations(self.slots, 2):
             for dish_a, dish_b in product(alternatives[slot_a], alternatives[slot_b]):
-                total = self._valid_total(self._replace(self._replace(menu, *slot_a, dish_a), *slot_b, dish_b))
+                total = self._valid_total(self._replace(self._replace(menu, slot_a, dish_a), slot_b, dish_b))
                 saving = total is not None and round(current_total - total, 2)
                 if saving and saving > 0 and (best is None or total < best["new_total"]):
                     best = {"replace": [self._dish_at(menu, slot_a), self._dish_at(menu, slot_b)],
@@ -509,10 +582,9 @@ class MenuTools:
         return best
 
     def _alternatives(self, menu: dict, slot: tuple) -> list[str]:
-        """מנות מאותה קטגוריה שאינן כבר בתפריט."""
-        category = self.recipes[self._dish_at(menu, slot)]["category"]
-        in_menu = set(menu["mains"]) | {menu["side"], menu["vegetable"], menu["dessert"]}
-        return [n for n, r in self.recipes.items() if r["category"] == category and n not in in_menu]
+        """מנות מאותו סוג שאינן כבר בתפריט."""
+        in_menu = set(menu_dishes(menu))
+        return [n for n, r in self.recipes.items() if r["category"] == slot[0] and n not in in_menu]
 
     def _valid_total(self, menu: dict) -> float | None:
         """העלות של תפריט אם הוא תקין לגמרי (מבנה, מחירים, אורחים), אחרת None."""
@@ -523,18 +595,16 @@ class MenuTools:
 
     @staticmethod
     def _dish_at(menu: dict, slot: tuple) -> str:
-        field_name, index = slot
-        return menu[field_name] if index is None else menu[field_name][index]
+        category, index = slot
+        return menu[category][index]
 
     @staticmethod
-    def _replace(menu: dict, field_name: str, index: int | None, dish: str) -> dict:
+    def _replace(menu: dict, slot: tuple, dish: str) -> dict:
         """עותק של התפריט עם מנה אחת מוחלפת. לא משנה את המקור."""
-        new_menu = dict(menu, mains=list(menu["mains"]))
-        if index is None:
-            new_menu[field_name] = dish
-        else:
-            new_menu["mains"][index] = dish
-        return new_menu
+        category, index = slot
+        dishes = list(menu[category])
+        dishes[index] = dish
+        return dict(menu, **{category: dishes})
 
     def dish_cost(self, dish: str) -> tuple[float, list[str]]:
         """עלות מנה אחת לכל הסועדים (מעוגלת לאגורה), ומרכיבים בלי מחיר. כל חישוב עלות עובר דרך כאן."""
@@ -550,39 +620,46 @@ class MenuTools:
         return round(cost, 2), missing
 
     def _servings(self, recipe: dict) -> float:
-        factor = MAIN_PORTION_FACTOR if recipe["category"] == "main" else 1.0
-        return self.request.num_guests * factor
+        return self.request.num_guests * self._portion(recipe)
+
+    def _portion(self, recipe: dict) -> float:
+        return portion(self.request.courses.get(recipe["category"], 1))
 
     def _parse_menu(self, menu) -> tuple[list[dict], list[str]]:
         """הופך תפריט (שמות מנות) לרשימת מתכונים, ומחזיר הסבר על כל בעיה במבנה."""
+        courses = self.request.courses
         if not isinstance(menu, dict):
-            return [], ["התפריט צריך להיות אובייקט עם השדות mains, side, vegetable, dessert"]
+            return [], [f"התפריט צריך להיות אובייקט עם רשימת מנות לכל סוג: {', '.join(courses)}"]
 
         errors = []
-        mains = menu.get("mains")
-        if not isinstance(mains, list) or len(mains) != 2:
-            errors.append("צריך בדיוק 2 מנות עיקריות ברשימה mains")
-            mains = mains if isinstance(mains, list) else []
-        elif mains[0] == mains[1]:
-            errors.append("שתי המנות העיקריות זהות - צריך שתי מנות שונות")
+        for key, value in menu.items():
+            if key not in courses and value:  # רשימה ריקה לסוג שלא ביקשו - בסדר
+                errors.append(f"'{key}' לא בתפריט שביקשו ({describe_courses(courses)}). "
+                              f"השדות: {', '.join(courses)}")
 
-        slots = [("main", n) for n in mains] + [(c, menu.get(c)) for c in ("side", "vegetable", "dessert")]
         dishes = []
-        for category, name in slots:
-            if not isinstance(name, str) or not name:
-                errors.append(f"חסרה מנה מסוג {CATEGORIES[category]} (השדה {category})")
+        for category, count in courses.items():
+            names = menu.get(category)
+            if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
+                errors.append(f"חסרה רשימת מנות מסוג {CATEGORIES[category]} "
+                              f"(השדה {category}: רשימה של {count} מנות)")
                 continue
-            recipe = self.recipes.get(name)
-            if recipe is None:
-                close = difflib.get_close_matches(name, self.recipes, n=1, cutoff=0.6)
-                hint = f" אולי התכוונת ל-'{close[0]}'?" if close else ""
-                errors.append(f"המנה '{name}' לא קיימת במאגר.{hint}")
-                continue
-            if recipe["category"] != category:
-                errors.append(f"'{name}' היא {CATEGORIES[recipe['category']]}, "
-                              f"לא {CATEGORIES[category]}")
-                continue
-            dishes.append(recipe)
+            if len(names) != count:
+                errors.append(f"צריך בדיוק {count} מנות מסוג {CATEGORIES[category]} ברשימה {category}, "
+                              f"ויש {len(names)}")
+            if len(set(names)) < len(names):
+                errors.append(f"מנה כפולה ברשימה {category} - צריך מנות שונות")
+            for name in names:
+                recipe = self.recipes.get(name)
+                if recipe is None:
+                    close = difflib.get_close_matches(name, self.recipes, n=1, cutoff=0.6)
+                    hint = f" אולי התכוונת ל-'{close[0]}'?" if close else ""
+                    errors.append(f"המנה '{name}' לא קיימת במאגר.{hint}")
+                elif recipe["category"] != category:
+                    errors.append(f"'{name}' היא {CATEGORIES[recipe['category']]}, "
+                                  f"לא {CATEGORIES[category]}")
+                else:
+                    dishes.append(recipe)
         return dishes, errors
 
     def _shopping_list(self, dishes: list[dict]) -> list[dict]:

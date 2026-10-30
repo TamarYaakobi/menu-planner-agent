@@ -76,6 +76,19 @@ def steps_html(lines: list[str], steps) -> str:
     return f'<details class="box"><summary>🔍 איך הגעתי לזה ({_e(steps)} צעדים)</summary><ul class="steps">{items}</ul></details>'
 
 
+# לפי סדר הארוחה: (אייקון, כותרת למנה אחת, כותרת לכמה)
+MENU_LABELS = {"starter": ("🥣", "ראשונה", "ראשונות"), "main": ("🍗", "עיקרית", "עיקריות"),
+               "side": ("🥔", "תוספת", "תוספות"), "vegetable": ("🥗", "ירקות", "ירקות"),
+               "dessert": ("🍰", "קינוח", "קינוחים")}
+
+
+def compromise_note(item: dict) -> str:
+    """"יש לו/ה במקום: מרק עדשים" - או, כשאין, שזו המנה האחת שמותר שלא יאהב."""
+    if item.get("alternative"):  # שיחות ישנות - בלי השדה
+        return f"יש לו/ה במקום: {', '.join(item['alternative'])}"
+    return "מותר עד מנה אחת כזו"
+
+
 def menu_card_html(approved: dict, request: dict, missing_likes: list[str]) -> str:
     """התפריט כ"כרטיס": המנות, המחיר, ומה קרה לכל העדפה - כולל למה לא נכנסה."""
     menu, cost = approved["menu"], approved["total_cost"]
@@ -84,8 +97,8 @@ def menu_card_html(approved: dict, request: dict, missing_likes: list[str]) -> s
         budget = f"ביעד של {target:g}" if cost <= target else f"מעל היעד של {target:g}, בתוך {request['budget']:g}"
     else:
         budget = f"מתוך {request['budget']:g} ש\"ח"
-    rows = [("🍗 עיקריות", f"{menu['mains'][0]}, {menu['mains'][1]}"), ("🥔 תוספת", menu["side"]),
-            ("🥗 ירקות", menu["vegetable"]), ("🍰 קינוח", menu["dessert"])]
+    rows = [(f"{icon} {name if len(menu.get(category) or []) == 1 else plural}", ", ".join(menu[category]))
+            for category, (icon, name, plural) in MENU_LABELS.items() if menu.get(category)]
     parts = ['<div class="menu-card">',
              f'<div class="menu-head"><span class="menu-title">✅ הנה התפריט</span>'
              f'<span class="price">{cost:.0f} ש"ח</span></div>',
@@ -103,7 +116,7 @@ def menu_card_html(approved: dict, request: dict, missing_likes: list[str]) -> s
             prefs.append(f'<div class="pref">🤍 {who} - לא נכנס<span class="why">{_e(why)}</span></div>')
     for item in approved.get("compromises", []):
         prefs.append(f'<div class="pref">🔸 {_e(item["guest"])} לא אוהב/ת {_e(item["dislikes"])}, ויש ב{_e(item["dish"])}'
-                     f' (מותר עד מנה אחת)<span class="why">{_e(item["reason"])}</span></div>')
+                     f' - {_e(compromise_note(item))}<span class="why">{_e(item["reason"])}</span></div>')
     if prefs:
         parts.append('<div class="prefs">' + "".join(prefs) + "</div>")
     parts.append("</div>")
@@ -182,7 +195,20 @@ def load_conversation(conversation_id: str) -> dict | None:
     except (OSError, ValueError):  # קובץ חסר או פגום
         return None
     data["goal"] = ParsedGoal(**data["goal"]) if data.get("goal") else None
+    for saved in (data.get("previous_menu"), (data.get("menu") or {}).get("approved")):
+        if saved and isinstance(saved.get("menu"), dict):
+            saved["menu"] = upgrade_menu(saved["menu"])
     return data
+
+
+def upgrade_menu(menu: dict) -> dict:
+    """
+    תפריט משיחה שנשמרה לפני שאפשר היה לבחור את סוגי המנות: {"mains": [..], "side": "..", ...}
+    -> {"main": [..], "side": [..], ...}. תפריט במבנה החדש חוזר כמו שהוא.
+    """
+    if "mains" not in menu:
+        return menu
+    return {"main": list(menu["mains"]), **{c: [menu[c]] for c in ("side", "vegetable", "dessert") if menu.get(c)}}
 
 
 def list_conversations() -> list[dict]:
@@ -204,8 +230,8 @@ def delete_conversation(conversation_id: str):
 # ---------- מתכונים ----------
 
 # "מתכון לקינוח", "את המתכון של הסלט" - מילה שמצביעה על מקום בתפריט
-SLOT_WORDS = {"עיקרית": "mains", "עיקריות": "mains", "תוספת": "side", "סלט": "vegetable", "ירקות": "vegetable",
-              "קינוח": "dessert"}
+SLOT_WORDS = {"ראשונה": "starter", "ראשונות": "starter", "עיקרית": "main", "עיקריות": "main", "תוספת": "side",
+              "סלט": "vegetable", "ירקות": "vegetable", "קינוח": "dessert"}
 
 
 def wants_recipes(text: str) -> bool:
@@ -217,7 +243,7 @@ def requested_dishes(text: str, menu: dict) -> list[str]:
     אילו מנות מהתפריט ביקשו: "מתכון לשניצל" -> שניצל, "מתכון לקינוח" -> הקינוח.
     בלי התאמה - כל התפריט ("תביא את המתכונים").
     """
-    dishes = menu["mains"] + [menu["side"], menu["vegetable"], menu["dessert"]]
+    dishes = [d for category in MENU_LABELS for d in menu.get(category) or []]
     # "לשניצל" -> לשניצל / שניצל / ניצל: לא יודעים כמה אותיות הן קידומת, אז מנסים את כולן.
     # גרש הוא חלק מהמילה ("מג'דרה")
     words = {variant for w in re.findall(r"[\w'׳]+", text) for variant in _without_prefixes(w)}
@@ -226,7 +252,7 @@ def requested_dishes(text: str, menu: dict) -> list[str]:
     for word, slot in SLOT_WORDS.items():
         # "סלט" מצביע על מנת הירקות - אלא אם כבר נבחרה מנה ספציפית שזה חלק משמה ("סלט הפירות")
         if word in words and not any(word in d.split() for d in chosen):
-            chosen += menu[slot] if slot == "mains" else [menu[slot]]
+            chosen += menu.get(slot) or []
     return list(dict.fromkeys(chosen)) or dishes  # בלי כפילויות
 
 
@@ -260,10 +286,17 @@ def _nice(x: float) -> str:
     return f"{x:.1f}".rstrip("0").rstrip(".")
 
 
+def portion_note(card: dict) -> str:
+    """" (60% מנה לסועד, כי יש 2 עיקריות)" - רק כשיש כמה מנות מאותו סוג."""
+    if card["portion"] >= 1:
+        return ""
+    _, _, plural = MENU_LABELS[card["category"]]
+    return f" ({card['portion']:.0%} מנה לסועד, כי יש {card['same_kind']} {plural})"
+
+
 def format_recipe(card: dict) -> str:
-    portion = " (60% מנה לסועד, כי יש שתי עיקריות)" if card["main_portion"] else ""
     lines = [f"### 🍳 {card['name']}",
-             f"⏱️ {card['time_minutes']} דקות · {diners(card['num_guests'], 'ל')}{portion}", "",
+             f"⏱️ {card['time_minutes']} דקות · {diners(card['num_guests'], 'ל')}{portion_note(card)}", "",
              "**מצרכים:**"]
     lines += [f"- {format_amount(i['amount'], i['unit'])} {i['name']}" for i in card["ingredients"]]
     lines += ["", "**הכנה:**"] + [f"{n}. {step}" for n, step in enumerate(card["steps"], 1)]

@@ -12,10 +12,10 @@ from tools import (ALLERGENS, CATEGORIES, DATA_DIR, DIETS, DataError,  # noqa: E
                    MenuRequest, MenuTools, load_json)
 
 VALID_MENU = {
-    "mains": ["עוף בתנור עם תפוחי אדמה", "קארי עדשים בחלב קוקוס"],
-    "side": "מג'דרה",
-    "vegetable": "סלט ירקות קצוץ",
-    "dessert": "סלט פירות",
+    "main": ["עוף בתנור עם תפוחי אדמה", "קארי עדשים בחלב קוקוס"],
+    "side": ["מג'דרה"],
+    "vegetable": ["סלט ירקות קצוץ"],
+    "dessert": ["סלט פירות"],
 }
 
 
@@ -110,13 +110,13 @@ class TestCalculateCost(unittest.TestCase):
             for n, c in [("m1", "main"), ("m2", "main"), ("s", "side"), ("v", "vegetable"), ("d", "dessert")]
         ]
         tools = MenuTools(request, recipes=recipes, prices=prices)
-        result = tools.calculate_cost({"mains": ["m1", "m2"], "side": "s", "vegetable": "v", "dessert": "d"})
+        result = tools.calculate_cost({"main": ["m1", "m2"], "side": ["s"], "vegetable": ["v"], "dessert": ["d"]})
         # עיקריות: 60% מנה לכל אחת -> 12 ש"ח כל אחת. שאר המנות: 20 ש"ח כל אחת
         self.assertAlmostEqual(result["total_cost"], 12 + 12 + 20 * 3)
         self.assertTrue(result["within_budget"])
 
     def test_missing_price_is_reported(self):
-        menu = dict(VALID_MENU, mains=["ריזוטו כמהין", "שקשוקה"])
+        menu = dict(VALID_MENU, main=["ריזוטו כמהין", "שקשוקה"])
         result = make_tools().calculate_cost(menu)
         self.assertFalse(result["complete"])
         self.assertEqual(result["missing_prices"][0]["ingredient"], "כמהין")
@@ -128,13 +128,16 @@ class TestCalculateCost(unittest.TestCase):
 
     def test_invalid_menu_structure(self):
         tools = make_tools()
-        self.assertIn("error", tools.calculate_cost({"mains": ["שקשוקה"]}))
+        self.assertIn("error", tools.calculate_cost({"main": ["שקשוקה"]}))
         self.assertIn("error", tools.calculate_cost("not a dict"))
-        self.assertIn("error", tools.calculate_cost(dict(VALID_MENU, side="סלט פירות")))  # קטגוריה שגויה
-        self.assertIn("error", tools.calculate_cost(dict(VALID_MENU, mains=["שקשוקה", "שקשוקה"])))
+        self.assertIn("error", tools.calculate_cost(dict(VALID_MENU, side=["סלט פירות"])))  # קטגוריה שגויה
+        self.assertIn("error", tools.calculate_cost(dict(VALID_MENU, main=["שקשוקה", "שקשוקה"])))
+        self.assertIn("error", tools.calculate_cost(dict(VALID_MENU, side="מג'דרה")))  # מחרוזת במקום רשימה
+        self.assertIn("error", tools.calculate_cost(dict(VALID_MENU, starter=["מרק עוף"])))  # לא ביקשו ראשונה
+        self.assertNotIn("error", tools.calculate_cost(dict(VALID_MENU, starter=[])))
 
     def test_typo_gets_suggestion(self):
-        result = make_tools().calculate_cost(dict(VALID_MENU, dessert="סלט פרות"))
+        result = make_tools().calculate_cost(dict(VALID_MENU, dessert=["סלט פרות"]))
         self.assertIn("סלט פירות", result["details"][0])
 
 
@@ -147,21 +150,21 @@ class TestCheckGuests(unittest.TestCase):
 
     def test_vegetarian_needs_one_main(self):
         tools = make_tools(guests=[{"name": "יוסי", "diet": "vegetarian"}])
-        menu = dict(VALID_MENU, mains=["עוף בתנור עם תפוחי אדמה", "שניצל עוף"])
+        menu = dict(VALID_MENU, main=["עוף בתנור עם תפוחי אדמה", "שניצל עוף"])
         violations = tools.check_guests(menu)["violations"]
         self.assertEqual(violations[0]["type"], "hard")
 
     def test_allergy_in_side_dish_is_hard(self):
         tools = make_tools(guests=[{"name": "דנה", "allergies": ["nuts"]}])
-        menu = dict(VALID_MENU, side="אורז עם שקדים קלויים")
+        menu = dict(VALID_MENU, side=["אורז עם שקדים קלויים"])
         result = tools.check_guests(menu)
         self.assertEqual([v["type"] for v in result["violations"]], ["hard"])
 
     def test_one_disliked_side_is_ok_two_is_not(self):
         tools = make_tools(guests=[{"name": "מירב", "dislikes": ["פטריות", "עגבניות"]}])
-        one = dict(VALID_MENU, vegetable="פטריות מוקפצות עם שום")
+        one = dict(VALID_MENU, vegetable=["פטריות מוקפצות עם שום"])
         self.assertTrue(tools.check_guests(one)["all_satisfied"])
-        two = dict(one, side="פתיתים ברוטב עגבניות")
+        two = dict(one, side=["פתיתים ברוטב עגבניות"])
         self.assertEqual(tools.check_guests(two)["violations"][0]["type"], "soft")
 
 
@@ -177,7 +180,7 @@ class TestSuggestSwaps(unittest.TestCase):
             self.assertEqual(totals, sorted(totals))
             for option in slot["options"]:
                 self.assertNotEqual(option["dish"], slot["replace"])
-                self.assertNotIn(option["dish"], VALID_MENU["mains"])  # בלי עיקרית כפולה
+                self.assertNotIn(option["dish"], VALID_MENU["main"])  # בלי עיקרית כפולה
                 self.assertNotIn("אגוז", option["dish"])                # דנה אלרגית
                 self.assertNotEqual(option["dish"], "ריזוטו כמהין")     # אין לו מחיר מלא
 
@@ -192,7 +195,7 @@ class TestSuggestSwaps(unittest.TestCase):
     def test_offers_fix_for_guest_violation(self):
         # שתי עיקריות בשריות - ליוסי אין מה לאכול. ההצעות צריכות לכלול עיקרית צמחונית
         tools = make_tools(guests=[{"name": "יוסי", "diet": "vegetarian"}])
-        menu = dict(VALID_MENU, mains=["עוף בתנור עם תפוחי אדמה", "שניצל עוף"])
+        menu = dict(VALID_MENU, main=["עוף בתנור עם תפוחי אדמה", "שניצל עוף"])
         main_options = [o["dish"] for s in tools.suggest_swaps(menu)["suggestions"]
                         if s["category"] == "main" for o in s["options"]]
         self.assertTrue(main_options)
@@ -215,7 +218,7 @@ class TestSuggestSwaps(unittest.TestCase):
 
 
 class TestKosher(unittest.TestCase):
-    MEAT_AND_DAIRY = dict(VALID_MENU, dessert="עוגת גבינה")  # עוף בתנור (בשרי) + עוגת גבינה (חלבי)
+    MEAT_AND_DAIRY = dict(VALID_MENU, dessert=["עוגת גבינה"])  # עוף בתנור (בשרי) + עוגת גבינה (חלבי)
 
     def kosher_tools(self, **request):
         return MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": 1000, "kosher": True, **request}))
@@ -230,7 +233,7 @@ class TestKosher(unittest.TestCase):
         self.assertTrue(make_tools().check_guests(self.MEAT_AND_DAIRY)["all_satisfied"])
 
     def test_fish_and_parve_go_with_everything(self):
-        menu = dict(VALID_MENU, mains=["פילה אמנון ברוטב עגבניות", "קארי עדשים בחלב קוקוס"], dessert="עוגת גבינה")
+        menu = dict(VALID_MENU, main=["פילה אמנון ברוטב עגבניות", "קארי עדשים בחלב קוקוס"], dessert=["עוגת גבינה"])
         self.assertTrue(self.kosher_tools().check_guests(menu)["all_satisfied"])
 
     def test_search_shows_kashrut(self):
@@ -252,11 +255,7 @@ class TestKosher(unittest.TestCase):
 
 
 def _swap(menu, old, new):
-    swapped = dict(menu, mains=[new if m == old else m for m in menu["mains"]])
-    for key in ("side", "vegetable", "dessert"):
-        if menu[key] == old:
-            swapped[key] = new
-    return swapped
+    return {category: [new if d == old else d for d in dishes] for category, dishes in menu.items()}
 
 
 class TestPreferenceReasons(unittest.TestCase):
@@ -295,9 +294,11 @@ class TestPreferenceReasons(unittest.TestCase):
         self.assertIn("אין במאגר", likes[1]["reason"])
 
     def test_compromise_on_a_dislike_is_explained(self):
-        report = self.report([{"name": "מירב", "dislikes": ["עגבניות"]}])  # בסלט הקצוץ יש עגבניות
-        self.assertEqual(report["compromises"][0]["dish"], "סלט ירקות קצוץ")
-        self.assertTrue(report["compromises"][0]["reason"])
+        report = self.report([{"name": "מירב", "dislikes": ["עגבניות"]}])  # בקארי ובסלט הקצוץ יש עגבניות
+        by_dish = {c["dish"]: c for c in report["compromises"]}
+        self.assertEqual(by_dish["קארי עדשים בחלב קוקוס"]["alternative"], ["עוף בתנור עם תפוחי אדמה"])
+        self.assertEqual(by_dish["סלט ירקות קצוץ"]["alternative"], [])  # המנה האחת שמותר
+        self.assertTrue(all(c["reason"] for c in report["compromises"]))
 
     def test_finalize_includes_reasons(self):
         tools = MenuTools(MenuRequest.from_dict({"num_guests": 8, "budget": 1000,
@@ -336,7 +337,7 @@ class TestLikes(unittest.TestCase):
 
     def test_like_matches_ingredient_or_dish_name(self):
         tools = make_tools(guests=[{"name": "דודה", "likes": ["חסה", "שקשוקה", "עוף"]}])
-        menu = dict(VALID_MENU, vegetable="סלט חסה עם אגוזי מלך")
+        menu = dict(VALID_MENU, vegetable=["סלט חסה עם אגוזי מלך"])
         report = {x["likes"]: x for x in tools.check_guests(menu)["likes"]}
         self.assertEqual(report["חסה"]["dishes"], ["סלט חסה עם אגוזי מלך"])  # מרכיב
         self.assertFalse(report["שקשוקה"]["in_menu"])
@@ -345,7 +346,7 @@ class TestLikes(unittest.TestCase):
     def test_like_never_breaks_validity(self):
         without = make_tools(guests=[{"name": "דנה", "allergies": ["nuts"]}])
         with_like = make_tools(guests=[{"name": "דנה", "allergies": ["nuts"], "likes": ["אגוזי מלך"]}])
-        menu = dict(VALID_MENU, vegetable="סלט חסה עם אגוזי מלך")  # היא אוהבת - אבל אלרגית
+        menu = dict(VALID_MENU, vegetable=["סלט חסה עם אגוזי מלך"])  # היא אוהבת - אבל אלרגית
         self.assertFalse(with_like.check_guests(menu)["all_satisfied"])
         self.assertEqual(with_like.finalize_menu(menu)["approved"], without.finalize_menu(menu)["approved"])
 
@@ -361,13 +362,163 @@ class TestLikes(unittest.TestCase):
 
     def test_finalize_reports_likes(self):
         tools = make_tools(guests=[{"name": "דודה", "likes": ["חסה"]}])
-        result = tools.finalize_menu(dict(VALID_MENU, vegetable="סלט חסה עם אגוזי מלך"))
+        result = tools.finalize_menu(dict(VALID_MENU, vegetable=["סלט חסה עם אגוזי מלך"]))
         self.assertTrue(result["likes"][0]["in_menu"])
 
     def test_empty_like_is_dropped(self):
         request = MenuRequest.from_dict({"num_guests": 5, "budget": 100,
                                          "guests": [{"name": "דודה", "likes": ["", " "]}]})
         self.assertEqual(request.guests[0].likes, [])
+
+
+class TestCourses(unittest.TestCase):
+    """המשתמש בוחר כמה מנות יהיו מכל סוג - והכללים חלים על כל סוג לפי מה שנבחר."""
+    MENU = {"starter": ["מרק עדשים כתומות"], "main": ["שניצל עוף"], "dessert": ["סלט פירות", "עוגת שוקולד"]}
+
+    def tools(self, guests=(), courses=None, **request):
+        courses = courses or {"starter": 1, "main": 1, "dessert": 2}
+        return MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": 1000, "guests": list(guests),
+                                                "courses": courses, **request}))
+
+    def test_default_is_the_classic_menu(self):
+        self.assertEqual(make_tools().request.courses, {"main": 2, "side": 1, "vegetable": 1, "dessert": 1})
+
+    def test_bad_courses_are_rejected(self):
+        for courses in ({"soup": 1}, {"main": 4}, {"main": -1}, {"main": 1.5}, {"main": True}, {"main": 0}, {},
+                        "main", ["main"]):
+            with self.subTest(courses=courses), self.assertRaises(ValueError):
+                MenuRequest.from_dict({"num_guests": 5, "budget": 100, "courses": courses})
+
+    def test_courses_are_kept_in_meal_order_without_zeros(self):
+        request = MenuRequest.from_dict({"num_guests": 5, "budget": 100,
+                                         "courses": {"dessert": 1, "side": 0, "starter": 1, "main": 2}})
+        self.assertEqual(list(request.courses.items()), [("starter", 1), ("main", 2), ("dessert", 1)])
+
+    def test_menu_must_match_the_chosen_courses(self):
+        tools = self.tools()
+        self.assertNotIn("error", tools.calculate_cost(self.MENU))
+        self.assertIn("error", tools.calculate_cost(dict(self.MENU, main=["שניצל עוף", "שקשוקה"])))  # ביקשו אחת
+        self.assertIn("error", tools.calculate_cost(dict(self.MENU, side=["מג'דרה"])))             # לא ביקשו תוספת
+        self.assertIn("error", tools.calculate_cost({k: v for k, v in self.MENU.items() if k != "starter"}))
+
+    def test_single_dish_of_a_kind_must_suit_everyone(self):
+        # עיקרית אחת בלבד - הצמחוני לא יכול לאכול שניצל, וזו הפרה קשה (עם שתי עיקריות זה היה מותר)
+        result = self.tools([{"name": "יוסי", "diet": "vegetarian"}]).check_guests(self.MENU)
+        self.assertEqual([v["type"] for v in result["violations"]], ["hard"])
+        self.assertIn("שניצל עוף", result["violations"][0]["problem"])
+
+    def test_two_desserts_one_is_enough(self):
+        # עוגת השוקולד עם ביצים - אבל יש סלט פירות, אז אלרגי לביצים מסודר בקינוחים
+        guests = [{"name": "דנה", "allergies": ["eggs"]}]
+        menu = dict(self.MENU, main=["עוף בתנור עם תפוחי אדמה"])
+        self.assertTrue(self.tools(guests).check_guests(menu)["all_satisfied"])
+        both_eggs = dict(menu, dessert=["מוס שוקולד", "עוגת שוקולד"])
+        problem = self.tools(guests).check_guests(both_eggs)["violations"][0]["problem"]
+        self.assertIn("אין אף מנה מסוג קינוח", problem)
+
+    def test_dislikes_count_kinds_not_dishes(self):
+        # לא אוהבת שוקולד - אבל יש סלט פירות, אז הקינוחים לא "נתקעים". עם מרק שיש בו בצל - עדיין סוג אחד בלבד
+        guests = [{"name": "מירב", "dislikes": ["שוקולד", "בצל"]}]
+        menu = dict(self.MENU, main=["סלמון בתנור עם לימון ושמיר"])
+        self.assertTrue(self.tools(guests).check_guests(menu)["all_satisfied"])
+        stuck = dict(menu, dessert=["מוס שוקולד", "עוגת שוקולד"])  # עכשיו גם הקינוחים וגם המרק
+        self.assertEqual(self.tools(guests).check_guests(stuck)["violations"][0]["type"], "soft")
+        report = self.tools(guests).preferences_report(menu)
+        self.assertEqual([(c["dish"], c["alternative"]) for c in report["compromises"]],
+                         [("מרק עדשים כתומות", []), ("עוגת שוקולד", ["סלט פירות"])])
+
+    def test_disliked_dish_with_an_alternative_is_still_reported(self):
+        # מהצ'אט: מרק עוף לצד מרק עדשים, והמארחת לא אוהבת עוף. מותר - אבל צריך להופיע בכרטיס, עם חלופה זולה
+        tools = self.tools([{"name": "אני", "dislikes": ["עוף"]}], courses={"starter": 2, "main": 1, "dessert": 1})
+        menu = {"starter": ["מרק עדשים כתומות", "מרק עוף"], "main": ["קארי עדשים בחלב קוקוס"], "dessert": ["סלט פירות"]}
+        self.assertTrue(tools.check_guests(menu)["all_satisfied"])
+        [item] = tools.preferences_report(menu)["compromises"]
+        self.assertEqual((item["dish"], item["alternative"]), ("מרק עוף", ["מרק עדשים כתומות"]))
+        self.assertIn("אפשר היה", item["reason"])
+
+    def test_portions_follow_the_number_of_dishes(self):
+        # 10 סועדים: מנה ראשונה ועיקרית - מנה שלמה; שני קינוחים - 60% מכל אחד
+        tools = self.tools()
+        cost = tools.calculate_cost(self.MENU)
+        whole = MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": 1000,
+                                                 "courses": {"dessert": 1}}))
+        fruit_whole = whole.calculate_cost({"dessert": ["סלט פירות"]})["total_cost"]
+        fruit = next(d["cost"] for d in cost["dishes"] if d["name"] == "סלט פירות")
+        self.assertAlmostEqual(fruit, round(fruit_whole * 0.6, 2), places=1)
+
+    def test_swaps_stay_inside_the_chosen_courses(self):
+        tools = self.tools([{"name": "דנה", "allergies": ["eggs"]}])
+        menu = dict(self.MENU, main=["עוף בתנור עם תפוחי אדמה"])
+        result = tools.suggest_swaps(menu)
+        self.assertEqual([s["category"] for s in result["suggestions"]], ["starter", "main", "dessert", "dessert"])
+        for suggestion in result["suggestions"]:
+            for option in suggestion["options"]:
+                swapped = _swap(menu, suggestion["replace"], option["dish"])
+                self.assertTrue(tools.finalize_menu(swapped)["approved"], swapped)
+
+    def test_like_for_a_course_that_is_not_in_the_menu(self):
+        reason = TestPreferenceReasons().like_reason([{"name": "שירה", "likes": ["מרק עוף"]}])
+        self.assertIn("אין מנה ראשונה בתפריט", reason)
+
+    def test_judge_finds_the_cheapest(self):
+        from evaluate import find_best_menu
+        tools = self.tools([{"name": "דנה", "allergies": ["eggs"], "dislikes": ["בצל"]}], kosher=True)
+        truth = find_best_menu(tools)
+        self.assertTrue(tools.finalize_menu(truth["best"]["menu"])["approved"])
+        self.assertNotIn("best_swap", tools.suggest_swaps(truth["best"]["menu"]))
+
+
+class TestFoodGroups(unittest.TestCase):
+    """"לא אוהב עוף" = כל מה שיש בו עוף, גם פרגיות. מילה ספציפית נשארת ספציפית."""
+
+    def test_general_word_covers_the_group(self):
+        g = MenuRequest.from_dict({"num_guests": 2, "budget": 100,
+                                   "guests": [{"name": "אני", "dislikes": ["עוף", "דגים", "גבינות"]}]}).guests[0]
+        tools = make_tools()
+        for dish in ("פרגיות בתנור עם ירקות", "מרק עוף", "שניצל עוף", "סלמון בתנור עם לימון ושמיר",
+                     "קציצות דגים", "סלט קפרזה", "פסטה ברוטב שמנת ופטריות"):
+            with self.subTest(dish):
+                self.assertTrue(g.disliked_ingredients(tools.recipes[dish]))
+        self.assertFalse(g.disliked_ingredients(tools.recipes["קארי עדשים בחלב קוקוס"]))
+
+    def test_specific_word_stays_specific(self):
+        g = MenuRequest.from_dict({"num_guests": 2, "budget": 100,
+                                   "guests": [{"name": "אני", "dislikes": ["חזה עוף"]}]}).guests[0]
+        tools = make_tools()
+        self.assertTrue(g.disliked_ingredients(tools.recipes["שניצל עוף"]))
+        self.assertFalse(g.disliked_ingredients(tools.recipes["פרגיות בתנור עם ירקות"]))
+
+    def test_search_uses_the_group(self):
+        names = [r["name"] for r in make_tools().search_recipes("main", exclude_ingredients=["עוף"])["recipes"]]
+        self.assertNotIn("פרגיות בתנור עם ירקות", names)
+        liked = [r["name"] for r in make_tools().search_recipes("main", include_any=["דגים"])["recipes"]]
+        self.assertEqual(sorted(liked), ["סלמון בתנור עם לימון ושמיר", "פילה אמנון ברוטב עגבניות"])
+
+
+class TestExcludeDishes(unittest.TestCase):
+    """"אבל יש עוף במרק" - המשתמש ביקש להחליף מנה. אילוץ קשיח, כמו אלרגיה."""
+
+    def tools(self):
+        return MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": 1000, "exclude_dishes": ["מג'דרה"]}))
+
+    def test_excluded_dish_is_a_hard_violation(self):
+        tools = self.tools()
+        violations = tools.check_guests(VALID_MENU)["violations"]
+        self.assertEqual([(v["type"], v["guest"]) for v in violations], [("hard", "בקשת המשתמש")])
+        self.assertFalse(tools.finalize_menu(VALID_MENU)["approved"])
+
+    def test_search_swaps_and_judge_skip_it(self):
+        from evaluate import find_best_menu
+        tools = self.tools()
+        self.assertNotIn("מג'דרה", [r["name"] for r in tools.search_recipes("side")["recipes"]])
+        side = next(s for s in tools.suggest_swaps(VALID_MENU)["suggestions"] if s["category"] == "side")
+        self.assertTrue(side["options"])  # יש במה להחליף
+        self.assertNotIn("מג'דרה", find_best_menu(tools)["best"]["menu"]["side"])
+
+    def test_invalid_value(self):
+        for value in ("מג'דרה", [1]):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                MenuRequest.from_dict({"num_guests": 5, "budget": 100, "exclude_dishes": value})
 
 
 class TestFinalizeMenu(unittest.TestCase):
@@ -382,7 +533,7 @@ class TestFinalizeMenu(unittest.TestCase):
 
     def test_rejects_and_explains(self):
         tools = make_tools(budget=50, guests=[{"name": "דנה", "allergies": ["nuts"]}])
-        result = tools.finalize_menu(dict(VALID_MENU, side="אורז עם שקדים קלויים"))
+        result = tools.finalize_menu(dict(VALID_MENU, side=["אורז עם שקדים קלויים"]))
         self.assertFalse(result["approved"])
         self.assertEqual(len(result["reasons"]), 2)  # תקציב + אלרגיה
         self.assertIsNone(tools.approved_menu)

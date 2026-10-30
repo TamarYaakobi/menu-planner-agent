@@ -22,7 +22,8 @@ from hebrew_page import mark_page_hebrew
 from goal_parser import parse_goal, unknown_dislikes
 from llm import DEFAULT_MODEL, ConfigError, create_client, fallback_models
 from scenarios import SCENARIOS
-from tools import ALLERGENS, CATEGORIES, DIETS, MenuRequest, MenuTools
+from tools import (ALLERGENS, CATEGORIES, DEFAULT_COURSES, DIETS, MAX_PER_COURSE, MenuRequest, MenuTools,
+                   describe_courses)
 
 st.set_page_config(page_title="בודק האג'נט", page_icon="🍽️", layout="wide")
 mark_page_hebrew()  # אחרת הדפדפן "מתרגם" את העברית ומשבש אותה
@@ -91,6 +92,11 @@ def request_editor(scenario: dict) -> dict:
         column_config={"תזונה": st.column_config.SelectboxColumn(options=["", *DIETS.values()])},
     )
     request = {"num_guests": int(num_guests), "budget": budget, "guests": table_to_guests(table)}
+    courses = data.get("courses") or DEFAULT_COURSES
+    st.caption("כמה מנות מכל סוג:")
+    request["courses"] = {
+        c: int(col.number_input(name, 0, MAX_PER_COURSE, value=courses.get(c, 0), key=f"c_{sid}_{c}"))
+        for col, (c, name) in zip(st.columns(len(CATEGORIES)), CATEGORIES.items())}
     if st.checkbox("🕍 ארוחה כשרה (בלי בשר וחלב יחד)", value=bool(data.get("kosher")), key=f"k_{sid}"):
         request["kosher"] = True
     if data.get("target_budget") is not None:  # "בערך" - היעד נשמר, והתקציב בטופס הוא המקסימום
@@ -162,11 +168,8 @@ def show_result(r: dict):
         c4.metric("עלות", f"{r['approved']['total_cost']:.0f} ש\"ח", f"{budget - r['approved']['total_cost']:.0f} מתחת לתקציב")
         menu = r["approved"]["menu"]
         st.subheader("✅ התפריט")
-        st.table(pd.DataFrame([
-            {"סוג": "עיקרית", "מנה": menu["mains"][0]}, {"סוג": "עיקרית", "מנה": menu["mains"][1]},
-            {"סוג": "תוספת", "מנה": menu["side"]}, {"סוג": "ירקות", "מנה": menu["vegetable"]},
-            {"סוג": "קינוח", "מנה": menu["dessert"]},
-        ]))
+        st.table(pd.DataFrame([{"סוג": CATEGORIES[c], "מנה": dish}
+                               for c in CATEGORIES for dish in menu.get(c) or []]))
         for like in r["approved"].get("likes", []):
             where = f"✓ ב{', '.join(like['dishes'])}" if like["in_menu"] else "✗ לא נכנס לתפריט"
             st.write(f"{'❤️' if like['in_menu'] else '🤍'} {like['guest']} אוהב/ת {like['likes']}: {where}")
@@ -282,15 +285,12 @@ def sandbox_tab(scenario: dict):
     st.caption(f"לפי התרחיש: {scenario['title']} ({scenario['request']['num_guests']} סועדים, "
                f"תקציב {scenario['request']['budget']} ש\"ח)")
 
-    names = {c: [n for n, r in tools.recipes.items() if r["category"] == c] for c in CATEGORIES}
-    mains = st.multiselect("2 מנות עיקריות", names["main"], max_selections=2, key="sb_mains")
-    c1, c2, c3 = st.columns(3)
-    menu = {
-        "mains": mains,
-        "side": c1.selectbox("תוספת", names["side"], key="sb_side"),
-        "vegetable": c2.selectbox("ירקות", names["vegetable"], key="sb_veg"),
-        "dessert": c3.selectbox("קינוח", names["dessert"], key="sb_dessert"),
-    }
+    st.caption(f"התפריט: {describe_courses(tools.request.courses)}")
+    menu = {}
+    for col, (category, count) in zip(st.columns(len(tools.request.courses)), tools.request.courses.items()):
+        names = [n for n, r in tools.recipes.items() if r["category"] == category]
+        menu[category] = col.multiselect(f"{CATEGORIES[category]} ({count})", names, max_selections=count,
+                                         key=f"sb_{scenario['id']}_{category}")
 
     *tool_columns, judge_column = st.columns(5)
     for col, name in zip(tool_columns, ("calculate_cost", "check_guests", "suggest_swaps", "finalize_menu")):

@@ -167,6 +167,19 @@ SCENARIOS = [
         ]},
     },
     {
+        "id": "custom_courses",
+        "title": "תפריט לבחירה: מרק, עיקרית אחת ושני קינוחים",
+        "description": "עיקרית אחת בלבד, אז היא חייבת להתאים לכולם - גם לטבעונית וגם לאלרגי לביצים. "
+                       "סבתא אוהבת מרק עוף, אבל המרק היחיד חייב להיות טבעוני.",
+        "expect": "success",
+        "request": {"num_guests": 12, "budget": 95, "courses": {"starter": 1, "main": 1, "dessert": 2}, "guests": [
+            {"name": "נועה", "diet": "vegan"},
+            {"name": "איתי", "allergies": ["eggs"]},
+            {"name": "אבא", "dislikes": ["בצל", "עדשים"]},
+            {"name": "סבתא", "likes": ["מרק עוף"]},
+        ]},
+    },
+    {
         "id": "single_guest",
         "title": "סועד יחיד",
         "description": "ארוחה לאדם אחד. בודק שהחישובים עובדים גם בכמויות קטנות.",
