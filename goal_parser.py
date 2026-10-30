@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 from dataclasses import dataclass, field
@@ -36,13 +37,16 @@ QUESTIONS = {
 }
 
 
-def _known_ingredients() -> list[str]:
+# נטען פעם אחת: זיהוי "אוהב"/"לא אוהב" נקרא בכל פענוח, וקריאה מהדיסק בכל פעם האטה את הבדיקות פי 3
+@functools.cache
+def _known_ingredients() -> tuple[str, ...]:
     recipes = load_json(DATA_DIR / "recipes.json")
-    return sorted({ing["name"] for r in recipes for ing in r["ingredients"]})
+    return tuple(sorted({ing["name"] for r in recipes for ing in r["ingredients"]}))
 
 
-def _known_dishes() -> list[str]:
-    return [r["name"] for r in load_json(DATA_DIR / "recipes.json")]
+@functools.cache
+def _known_dishes() -> tuple[str, ...]:
+    return tuple(r["name"] for r in load_json(DATA_DIR / "recipes.json"))
 
 
 def _group_words() -> list[str]:
@@ -82,6 +86,9 @@ PARSER_PROMPT = f"""אתה מפענח בקשות לתכנון ארוחה. קרא
 - likes: מנות או מרכיבים שהאדם אוהב ("אוהבת חסה", "מת על שקשוקה") - העדפה רכה. כתוב בשם מהרשימות כשאפשר.
   גם אם זה לא קיים במאגר ("אוהבת חצילים") - רשום אותו ב-likes כמו שהוא. הקוד יגיד למשתמש שאין מתכון כזה.
   "אוהב X" זה תמיד likes, ולעולם לא dislikes. אורח שרק אוהב משהו - גם הוא ב-guests.
+  "הקטנים לא אוהבים עוף והגדולים כן" = שני אורחים: הקטנים - dislikes ["עוף"], הגדולים - likes ["עוף"].
+  בקשה למנה עם משהו ("שיהיה קינוח עם שוקולד", "מנה ראשונה עם אפונה") - likes של מי שכותב/ת ("אני"),
+  אלא אם נאמר למי. אם זה סוג מנה שלא בתפריט - גם courses.
   מנות שיש במאגר: {", ".join(_known_dishes())}
 - kosher: true אם ביקשו ארוחה כשרה (בלי בשר וחלב יחד).
 - exclude_dishes: מנות מהמאגר שהמשתמש לא רוצה בתפריט ("בלי שקשוקה"), בשם המדויק שלהן במאגר.
@@ -94,9 +101,11 @@ PARSER_PROMPT = f"""אתה מפענח בקשות לתכנון ארוחה. קרא
   "גם מרק" = {json.dumps({"starter": 1, **DEFAULT_COURSES})}.
   מנה שמישהו אוהב ("אמא אוהבת מרק עוף") היא likes, לא בקשה למבנה התפריט.
 - unsupported: הגבלה רפואית, דתית או תזונתית שאינה ברשימות למעלה - סוכרת, פירות ים, חזיר וכו'.
-  אסור למפות אותה למשהו אחר. "לא אוהב X" זה תמיד dislikes, לא unsupported.
+  אסור למפות אותה למשהו אחר. מאכל שמישהו אוהב או לא אוהב ("לא סובל שעועית", "אוהבת ספגטי") - תמיד
+  likes/dislikes, לעולם לא unsupported, גם אם אין אותו במאגר.
 - כל הגבלה חייבת להופיע אצל אורח: מי שצמחוני מקבל diet, מי שאלרגי מקבל allergies. לא מספיק לכתוב את זה ב-assumptions.
-- assumptions: כל הנחה שעשית, בעברית.
+- assumptions: הנחות על מה שהמשתמש התכוון, בעברית פשוטה ("הנחתי שהבן האלרגי הוא אחד הילדים").
+  לא הסברים על השדות, על הרשימות או על איך מילאת אותם - המשתמש לא מכיר אותם.
 - off_topic: true אם הטקסט בכלל לא בקשה לתכנון ארוחה.
 - אל תמציא מידע שלא נאמר.
 """
@@ -228,23 +237,74 @@ def cross_check(text: str, parsed: dict) -> list[str]:
 
     # "דודה שלי שאוהבת חסה" פוענח פעם כ"לא אוהבת חסה" - והאג'נט היה מוציא את מה שהיא אוהבת
     # (מותר שאותו מאכל יהיה אצל אחד ב-likes ואצל אחר ב-dislikes: "נועה אוהבת שקשוקה ורון לא")
+    unsupported = [u for u in parsed.get("unsupported") or [] if isinstance(u, str)]
+
+    def in_list(word, key):
+        return any(_same_food(word, x) for g in guests for x in g.get(key) or [] if isinstance(x, str))
+
     for word in liked_words(text):
-        if any(_same_food(word, x) for g in guests for x in g.get("likes") or []):
+        if in_list(word, "likes"):
             continue
-        if any(_same_food(word, d) for g in guests for d in g.get("dislikes") or []):
+        if any(_same_food(word, u) for u in unsupported):
+            problems.append(f"'{word}' ב-unsupported, אבל מישהו אוהב את זה - זה likes, גם אם אין את זה במאגר.")
+        elif in_list(word, "dislikes"):
             problems.append(f"הטקסט אומר שמישהו אוהב '{word}', אבל זה ברשימת ה'לא אוהב' (dislikes). "
                             f"'אוהב' זה likes.")
         else:
             problems.append(f"הטקסט אומר שמישהו אוהב '{word}', ואף אורח לא מסומן כך. הוסף לו likes.")
+
+    # "שיהיה מנה אחרונה עם שוקולד" נעלם בשקט - לא היה אצל אף אחד
+    for food in course_with_words(text):
+        if not in_list(food, "likes"):
+            problems.append(f"הטקסט מבקש מנה עם '{food}', ואף אורח לא מסומן כך. הוסף likes למי שביקש "
+                            f"(\"אני\" אם לא נאמר אחרת).")
+
+    for g in guests:
+        both = [x for x in g.get("likes") or [] if isinstance(x, str)
+                and any(_same_food(x, d) for d in g.get("dislikes") or [] if isinstance(d, str))]
+        if both:
+            problems.append(f"'{g.get('name')}' גם אוהב/ת וגם לא אוהב/ת {', '.join(both)}. אם אלה אנשים שונים "
+                            f"(\"הקטנים לא, הגדולים כן\") - שני אורחים נפרדים.")
+
+    # ההפך: "הילדים הקטנים לא אוהבים עוף אבל הגדולים כן" פוענח כ"ילד קטן: אוהב עוף"
+    for word in disliked_words(text):
+        if in_list(word, "dislikes"):
+            continue
+        if any(_same_food(word, u) for u in unsupported):
+            problems.append(f"'{word}' ב-unsupported, אבל מישהו לא אוהב את זה - זה dislikes, גם אם אין את זה במאגר.")
+        elif in_list(word, "likes"):
+            problems.append(f"הטקסט אומר שמישהו לא אוהב '{word}', אבל זה רק ב-likes. 'לא אוהב' זה dislikes "
+                            f"(מותר שמישהו אחר כן אוהב).")
+        else:
+            problems.append(f"הטקסט אומר שמישהו לא אוהב '{word}', ואף אורח לא מסומן כך. הוסף לו dislikes.")
     return problems
 
 
 # סוגי מנות שהטקסט מבקש. "סלט פירות" הוא קינוח, לא מנת ירקות
 COURSE_PATTERNS = {"starter": r"(מנה ראשונה|מנות ראשונות|מרק\w*|פתיח\w*)",
                    "main": r"(מנה עיקרית|מנות עיקריות|עיקרית|עיקריות)", "side": r"(תוספת|תוספות)",
-                   "vegetable": r"(סלט|סלטים)(?!\s+פירות)", "dessert": r"(קינוח\w*|סלט פירות)"}
-# מילים שהופכות את הבקשה לשינוי של התפריט הרגיל ("גם מרק", "בלי קינוח") - ולא לתפריט כולו
-CHANGE_WORDS = r"(גם|תוסיף\w*|להוסיף|הוסיפ\w*|עוד|בנוסף|בלי|ללא|תוריד\w*|להוריד)"
+                   "vegetable": r"(סלט|סלטים)(?!\s+פירות)",
+                   "dessert": r"(קינוח\w*|סלט פירות|מנה אחרונה|מנות אחרונות)"}
+# מילים שהופכות את הבקשה לשינוי של התפריט הרגיל ("גם מרק", "בלי קינוח", "שיהיה קינוח עם שוקולד") -
+# ולא לתפריט כולו
+CHANGE_WORDS = r"(גם|תוסיף\w*|להוסיף|הוסיפ\w*|עוד|בנוסף|בלי|ללא|תוריד\w*|להוריד|שיהיה|שיהיו)"
+
+
+def _foods(parsed: dict) -> list[str]:
+    """כל מה שאורחים אוהבים או לא אוהבים. ערכים לא תקינים (מספר במקום רשימה) מדולגים - from_dict יסביר."""
+    guests = parsed.get("guests")
+    if not isinstance(guests, list):
+        return []
+    return [x for g in guests if isinstance(g, dict) for key in ("likes", "dislikes")
+            if isinstance(g.get(key), list) for x in g[key] if isinstance(x, str) and x.strip()]
+
+
+def course_with_words(text: str) -> list[str]:
+    """"מנה אחרונה עם שוקולד", "קינוח עם שוקולד", "מרק עם אפונה" -> המאכל שביקשו שיהיה במנה."""
+    pattern = "|".join(COURSE_PATTERNS.values())
+    words = [m.group(m.lastindex)  # הקבוצה האחרונה היא המאכל
+             for m in re.finditer(rf"(?<!\w)[ובלמהשכ]{{0,3}}({pattern})\s+עם\s+([^\s,.!?]+)", text)]
+    return [food for food in (_as_food(w, []) for w in words) if food]
 
 
 def course_problems(text: str, parsed: dict) -> list[str]:
@@ -254,13 +314,25 @@ def course_problems(text: str, parsed: dict) -> list[str]:
     מה שאורח אוהב או לא אוהב ("אמא אוהבת מרק עוף") לא נחשב בקשה למבנה התפריט.
     """
     courses = parsed.get("courses")
-    if not isinstance(courses, dict) or mentioned(text, CHANGE_WORDS):
+    if not isinstance(courses, dict):
         return []
-    foods = [x for g in parsed.get("guests") or [] if isinstance(g, dict)
-             for x in (g.get("likes") or []) + (g.get("dislikes") or []) if isinstance(x, str) and x.strip()]
-    for food in foods:
+    for food in _foods(parsed):
         text = text.replace(food, " ")
     asked = [c for c, pattern in COURSE_PATTERNS.items() if mentioned(text, pattern)]
+
+    if mentioned(text, CHANGE_WORDS):
+        # שינוי של התפריט הרגיל: סוג שלא הוזכר נשאר כמו בברירת המחדל. במשפחה של 9, "בת רוצה שיהיה
+        # תפוחי אדמה ואורז" הפך ל-2 תוספות בלי סלט
+        removing = mentioned(text, r"(בלי|ללא|תוריד\w*|להוריד)")
+        changed = [c for c in CATEGORIES if c not in asked
+                   and courses.get(c, 0) != DEFAULT_COURSES.get(c, 0)
+                   and not (removing and courses.get(c, 0) == 0)]
+        if not changed:
+            return []
+        return [f"courses משנה את {', '.join(CATEGORIES[c] for c in changed)}, אבל הטקסט לא ביקש לשנות אותם. "
+                f"סוג מנה שלא הוזכר נשאר כמו בברירת המחדל: {json.dumps(DEFAULT_COURSES)}. "
+                f"מאכל שמישהו רוצה ('שיהיה אורז') הוא likes, לא סוג מנה."]
+
     extra = [c for c, n in courses.items() if n and c in CATEGORIES and c not in asked]
     if not asked or not extra:
         return []
@@ -270,10 +342,14 @@ def course_problems(text: str, parsed: dict) -> list[str]:
 
 
 NEGATIONS = {"לא", "ולא", "שלא", "כשלא", "אינו", "אינה"}
-FILLERS = {"את", "גם", "מאוד", "ממש", "נורא", "הכי"}
+# מילים בין "אוהב" למאכל: "אוהבת מאוד עגבניות", "אוהב מנות עם בצקים"
+FILLERS = {"את", "גם", "מאוד", "ממש", "נורא", "הכי", "מנות", "מנה", "דברים", "עם", "של"}
 
 
-LIKE_STOPWORDS = {"זה", "אותו", "אותה", "אותם", "אותן", "כש", "מה", "הכל", "כולם", "אוכל", "לאכול"}
+LIKE_STOPWORDS = {"זה", "אותו", "אותה", "אותם", "אותן", "כש", "מה", "הכל", "כולם", "אוכל", "לאכול", "כן"}
+_LIKE_VERB = r"[ושכ]{0,2}אוהב\w*"
+_DISLIKE_VERB = r"[ושכ]{0,2}(אוהב\w*|סובל\w*)"   # אחרי "לא"
+_HATE_VERB = r"[ושכ]{0,2}שונא\w*"                 # בלי "לא"
 
 
 def liked_words(text: str) -> list[str]:
@@ -282,19 +358,37 @@ def liked_words(text: str) -> list[str]:
     לא רק מה שיש במאגר: בצ'אט, "אני אוהבת חצילים" נשמט בשקט - ואין חצילים באף מתכון.
     מילה שמתחילה ב-ל' ("אוהבת לבשל") היא פועל ולא מאכל - אלא אם היא במאגר.
     """
-    tokens = [t.strip(".,!?;:\"'()") for t in text.split()]
+    return _preference_words(text, negative=False)
+
+
+def disliked_words(text: str) -> list[str]:
+    """מה שמופיע אחרי "לא אוהב/ת", "לא סובל/ת" או "שונא/ת" - באותם כללים כמו liked_words."""
+    return _preference_words(text, negative=True)
+
+
+def _preference_words(text: str, negative: bool) -> list[str]:
+    raw = text.split()
+    tokens = [t.strip(".,!?;:\"'()") for t in raw]
     vocabulary = _known_ingredients() + _known_dishes()
     found = []
     for i, token in enumerate(tokens):
-        if not re.fullmatch(r"[ושכ]{0,2}אוהב\w*", token) or (i > 0 and tokens[i - 1] in NEGATIONS):
+        negated = i > 0 and tokens[i - 1] in NEGATIONS
+        if negative:
+            is_verb = (negated and re.fullmatch(_DISLIKE_VERB, token)) or re.fullmatch(_HATE_VERB, token)
+        else:
+            is_verb = not negated and re.fullmatch(_LIKE_VERB, token)
+        if not is_verb:
             continue
         j = i + 1
         while j < len(tokens) and tokens[j] in FILLERS:
             j += 1
         first = True
         while j < len(tokens) and (first or tokens[j].startswith("ו")):
-            # "חצילים ופירורי לחם": אחרי ו' - רק מאכל שקיים במאגר. אחרת "שקשוקה ורון לא אוהב..." תופס את "רון"
-            food = _as_food(tokens[j], vocabulary) if first else _as_food(tokens[j][1:], vocabulary, known_only=True)
+            # "חצילים ופירורי לחם": אחרי ו' - רק מאכל שקיים במאגר, או מילה שמסיימת את המשפט ("זיתים ושעועית,").
+            # אחרת "שקשוקה ורון לא אוהב..." תופס את "רון"
+            ends_clause = raw[j] != tokens[j] or j == len(tokens) - 1
+            food = _as_food(tokens[j], vocabulary) if first else \
+                _as_food(tokens[j][1:], vocabulary, known_only=not ends_clause)
             if food:
                 found.append(food)
             first, j = False, j + 1
@@ -313,7 +407,12 @@ def _as_food(word: str, vocabulary: list[str], known_only: bool = False) -> str 
 
 
 def _same_food(a: str, b: str) -> bool:
-    """"אגוזים" ו"אגוזי מלך", "חציל" ו"חצילים" - אותו מאכל. משווים גם לפי השורש, בלי סיומת רבים."""
+    """
+    "אגוזים" ו"אגוזי מלך", "חציל" ו"חצילים" - אותו מאכל. משווים גם לפי השורש, בלי סיומת רבים,
+    וגם לפי שמות אחרים שהקוד מכיר ("ספגטי" ו"פסטה").
+    """
+    if any(mentions(x, y) and x in FOOD_GROUPS for x, y in ((a, b), (b, a))):
+        return True
     return any(x in y or y in x for x in (a, _stem(a)) for y in (b, _stem(b)) if len(x) >= 2 and len(y) >= 2)
 
 
@@ -606,6 +705,10 @@ def _normalize_guest(guest: dict) -> dict:
 def _evaluate(text: str, parsed: dict, attempt: int, previous: ParsedGoal | None = None) -> ParsedGoal:
     """בודק פענוח אחד. warnings לא ריק = יש מה לתקן (ובניסיון האחרון - להציג למשתמש)."""
     parsed = collapse_food_groups(text, normalize(parsed), previous.request if previous else None)
+    # מאכל שכבר רשום כ"אוהב"/"לא אוהב" לא מוצג גם כ"הגבלה שלא נבדקת" ("טונה" הגיע לשניהם).
+    # רק התאמה מדויקת: "פירות ים" לא נמחק כי מישהו אוהב "סלט פירות"
+    foods = {x.strip() for x in _foods(parsed)}
+    parsed["unsupported"] = [u for u in parsed["unsupported"] if u.strip() not in foods]
     if previous is not None and not previous.attendees:
         # לבקשה הקודמת אין פירוט (שיחה ישנה) - פירוט חדש יכול לכלול רק את מי שנוסף ("שרון 1"), אז סומכים על הסכום
         parsed.pop("attendees", None)

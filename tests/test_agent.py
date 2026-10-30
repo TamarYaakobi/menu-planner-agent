@@ -143,6 +143,28 @@ class TestPreviousMenu(unittest.TestCase):
 class TestGivingUp(unittest.TestCase):
     """ויתור נבדק בקוד, כמו הצלחה."""
 
+    def test_approval_waits_for_possible_likes(self):
+        # מהצ'אט: 4 העדפות אפשריות נשארו בחוץ. עכשיו האישור נדחה עם ההחלפות, ואחריהן מאושר
+        guests = [{"name": "דודה", "likes": ["שקשוקה"]}, {"name": "בן", "likes": ["פאי"]}]
+        tools = MenuTools(MenuRequest.from_dict({"num_guests": 10, "budget": 1000, "guests": guests}))
+        upgraded = VALID_MENU
+        for step in tools.likes_upgrade(VALID_MENU):
+            upgraded = {c: [step["with"] if d == step["replace"] else d for d in dishes] for c, dishes in upgraded.items()}
+        agent, _, events = make_agent(reply(call("finalize_menu", {"menu": VALID_MENU})),
+                                      reply(call("finalize_menu", {"menu": upgraded})), guests=guests)
+        self.assertTrue(agent.run())
+        first = [d["result"] for kind, d in events if kind == "tool" and d["name"] == "finalize_menu"][0]
+        self.assertFalse(first["approved"])
+        self.assertIn("שקשוקה", first["reasons"][0])
+        self.assertTrue(all(x["in_menu"] for x in agent.tools.approved_menu["likes"]))
+
+    def test_likes_check_never_blocks_for_good(self):
+        # מודל שמתעלם מההצעה - אחרי MAX_LIKES_CHECKS פעמים התפריט התקין מאושר
+        guests = [{"name": "דודה", "likes": ["שקשוקה"]}]
+        agent, _, _ = make_agent(*[reply(call("finalize_menu", {"menu": VALID_MENU}))] * 3, guests=guests)
+        self.assertTrue(agent.run())
+        self.assertEqual(agent.steps_used, 3)
+
     def test_give_up_rejected_while_cheaper_swap_exists(self):
         agent, _, events = make_agent(
             reply(call("calculate_cost", {"menu": VALID_MENU})),   # יש לתפריט הזה החלפות זולות יותר

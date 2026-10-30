@@ -172,7 +172,7 @@ def describe_goal(goal) -> str:
         lines.append("\n⚠️ **ייתכן שלא הבנתי נכון:**\n" + "\n".join(f"- {w}" for w in goal.warnings))
     unknown = unknown_dislikes(goal.request)
     if unknown:
-        lines.append(f"\n*לא מצאתי במתכונים שלי:* {', '.join(unknown)}")
+        lines.append(f"\n👍 *{', '.join(unknown)} - אין באף מתכון שלי, אז ממילא לא יהיה בתפריט.*")
     missing_likes = unknown_likes(goal.request)
     if missing_likes:
         lines.append(f"\n🤍 *אין לי מתכונים עם {', '.join(missing_likes)}, אז לא אוכל לשלב את זה בתפריט.*")

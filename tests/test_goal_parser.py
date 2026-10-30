@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from goal_parser import (MAX_ATTEMPTS, ParsedGoal, _evaluate, build_request, cross_check,  # noqa: E402
-                         describe_changes, detect_unsupported, parse_goal, unknown_dislikes)
+                         course_with_words, describe_changes, detect_unsupported, disliked_words, liked_words, parse_goal,
+                         unknown_dislikes)
 from test_agent import FakeClient, call, reply  # noqa: E402
 from tools import MenuRequest  # noqa: E402
 
@@ -147,8 +148,9 @@ class TestCrossCheck(unittest.TestCase):
 
     def test_like_inverted_into_dislike_is_caught(self):
         # באג אמיתי: "שאוהבת חסה" פוענח כ"לא אוהבת חסה"
-        self.assertProblem(self.AUNT, parsed([guest("דודה", dislikes=["חסה"])]))
-        self.assertProblem(self.AUNT, parsed([guest("דודה", likes=["חסה"])]), False)
+        grandma = guest("סבתא", dislikes=["חריף"])
+        self.assertProblem(self.AUNT, parsed([grandma, guest("דודה", dislikes=["חסה"])]))
+        self.assertProblem(self.AUNT, parsed([grandma, guest("דודה", likes=["חסה"])]), False)
 
     def test_same_food_liked_by_one_disliked_by_another(self):
         text = "נועה אוהבת שקשוקה ורון לא אוהב שקשוקה"
@@ -316,6 +318,59 @@ class TestFoodGroupsAndComplaints(unittest.TestCase):
     def test_unknown_excluded_dish_is_sent_back(self):
         result = _evaluate("10 איש, 200 שקל, בלי המרק", parsed(exclude_dishes=["המרק"]), attempt=1)
         self.assertTrue(any("המרק" in w for w in result.warnings), result.warnings)
+
+
+class TestFamilyOfNine(unittest.TestCase):
+    """מהצ'אט: משפחה של 9 עם העדפות לכל אחד. "לא אוהבים עוף" התהפך, ומאכלים הגיעו ל"לא נתמך"."""
+    TEXT = ("הילדים הקטנים לא אוהבים עוף אבל הגדולים כן, בת אחת אוהבת מאוד עגבניות ורוטב אדום, אני אוהבת "
+            "ספגטי, בן אחד אוהב מנות עם בצקים ואחד לא סובל זיתים ושעועית, התקציב 500")
+
+    def test_words_found_in_the_text(self):
+        self.assertEqual(disliked_words(self.TEXT), ["עוף", "זיתים", "שעועית"])
+        self.assertEqual(liked_words(self.TEXT), ["עגבניות", "רוטב", "ספגטי", "בצקים"])
+
+    def test_dislike_turned_into_like_is_caught(self):
+        wrong = parsed([guest("ילד קטן", likes=["עוף"]), guest("ילד גדול", likes=["עוף"])])
+        problems = cross_check("הילדים הקטנים לא אוהבים עוף אבל הגדולים כן", wrong)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("לא אוהב 'עוף'", problems[0])
+        right = parsed([guest("הילדים הקטנים", dislikes=["עוף"]), guest("הילדים הגדולים", likes=["עוף"])])
+        self.assertEqual(cross_check("הילדים הקטנים לא אוהבים עוף אבל הגדולים כן", right), [])
+
+    def test_food_in_unsupported_is_sent_back(self):
+        wrong = parsed([guest("בן", dislikes=["זיתים"])], unsupported=["שעועית"])
+        problems = cross_check("אחד לא סובל זיתים ושעועית, 200 שקל", wrong)
+        self.assertTrue(any("'שעועית' ב-unsupported" in p and "dislikes" in p for p in problems), problems)
+
+    def test_synonyms_are_the_same_food(self):
+        right = parsed([guest("אני", likes=["פסטה"]), guest("בן", likes=["פאי תפוחים"])])
+        self.assertEqual(cross_check("אני אוהבת ספגטי, בן אחד אוהב מנות עם בצקים", right), [])
+
+    def test_course_with_a_food(self):
+        text = "שיהיה מנה אחרונה עם שוקולד, ומרק עם אפונה, ותוספת עם זה"
+        self.assertEqual(course_with_words(text), ["שוקולד", "אפונה"])
+        problems = cross_check(text, parsed([guest("אני", likes=["אפונה"])]))
+        self.assertTrue(any("'שוקולד'" in p for p in problems), problems)
+        self.assertEqual(cross_check(text, parsed([guest("אני", likes=["אפונה", "שוקולד"])])), [])
+
+    def test_same_guest_cannot_like_and_dislike_the_same_food(self):
+        problems = cross_check("10 איש", parsed([guest("ילדים קטנים", likes=["עוף"], dislikes=["עוף"])]))
+        self.assertTrue(any("גם אוהב/ת וגם לא אוהב/ת עוף" in p for p in problems), problems)
+
+    def test_wished_food_does_not_change_the_courses(self):
+        text = "9 איש, 500 שקל, שיהיה מנה אחרונה עם שוקולד ובת רוצה שיהיה תפוחי אדמה ואורז"
+        wrong = _evaluate(text, parsed(courses={"main": 2, "side": 2, "dessert": 1}), attempt=1)
+        self.assertTrue(any("courses משנה" in w for w in wrong.warnings), wrong.warnings)
+        right = _evaluate(text, parsed(courses=None), attempt=1)
+        self.assertFalse(any("courses" in w for w in right.warnings), right.warnings)
+
+    def test_food_is_not_also_unsupported(self):
+        data = parsed([guest("בעלי", likes=["טונה"])], unsupported=["טונה", "סוכרת"])
+        result = _evaluate("10 איש, 200 שקל, בעלי אוהב טונה, סבתא סוכרתית", data, attempt=1)
+        self.assertEqual(result.unsupported, ["סוכרת"])
+
+    def test_names_after_and_are_still_not_foods(self):
+        self.assertEqual(disliked_words("נועה לא אוהבת שקשוקה ורון אוהב"), ["שקשוקה"])
 
 
 class TestGuestCount(unittest.TestCase):

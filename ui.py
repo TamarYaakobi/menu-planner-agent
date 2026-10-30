@@ -228,7 +228,8 @@ def goal_input(model: str) -> tuple[dict | None, str, bool]:
     for title, items, show in (("הנחות שעשיתי", result.assumptions, st.info),
                                ("הגבלות שהמערכת לא יודעת לבדוק - התפריט לא מתחשב בהן", result.unsupported, st.warning),
                                ("ייתכן שלא הבנתי נכון", result.warnings, st.warning),
-                               ("לא מופיע באף מנה במאגר", unknown_dislikes(result.request), st.info)):
+                               ("לא אוהב/ת - אין באף מתכון, אז ממילא לא יהיה בתפריט",
+                                unknown_dislikes(result.request), st.info)):
         if items:
             show(f"**{title}:**\n\n" + "\n".join(f"- {item}" for item in items))
 

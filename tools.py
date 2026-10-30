@@ -73,6 +73,10 @@ FOOD_GROUPS = {word: members for words, members in (
     (("דג", "דגים"), ("דג", "סלמון", "אמנון")),
     (("גבינה", "גבינות"), ("גבינ", "פרמזן", "מוצרלה")),
     (("אגוז", "אגוזים"), ("אגוז", "שקדים")),
+    # שמות אחרים למה שיש במאגר ("אני אוהבת ספגטי", "רוטב אדום", "מנות עם בצקים")
+    (("ספגטי",), ("פסטה",)),
+    (("רוטב אדום",), ("רוטב עגבניות", "רסק עגבניות")),
+    (("בצק", "בצקים"), ("פאי",)),
 ) for word in words}
 
 
@@ -413,28 +417,35 @@ class MenuTools:
                 options = [x for x in self.recipes.values()
                            if x["category"] == r["category"] and x["name"] != r["name"] and not g.disliked_ingredients(x)]
                 compromises.append({"guest": g.name, "dislikes": disliked, "dish": r["name"], "alternative": alternative,
-                                    "reason": self._why_not(menu, options, f"אין חלופה בלי {disliked}")})
+                                    "reason": self._why_not(menu, options, f"אין חלופה בלי {disliked}",
+                                                            replacing=r["name"])})
         return {"likes": likes, "compromises": compromises}
 
-    def _why_not(self, menu: dict, options: list[dict], no_options: str) -> str:
-        """הסיבה הכי רלוונטית לכך שאף אחת מהמנות לא בתפריט. אם אחת מהן הייתה עובדת - אומרים את זה בכנות."""
+    def _why_not(self, menu: dict, options: list[dict], no_options: str, replacing: str | None = None) -> str:
+        """
+        הסיבה הכי רלוונטית לכך שאף אחת מהמנות לא בתפריט. אם אחת מהן הייתה עובדת - אומרים את זה בכנות.
+        replacing: רק במקום המנה הזו (למה לא הוחלף העוף - לא מה היה קורה אם הפסטה שלידו הייתה מוחלפת).
+        """
         if not options:
             return no_options
-        outcomes = sorted((self._try_dish(menu, r) for r in options), key=lambda o: o[0])
+        outcomes = sorted((self._try_dish(menu, r, replacing) for r in options), key=lambda o: o[0])
         rank, text = outcomes[0]
         if rank == 0:
             return f"אפשר היה - {text} - אבל האג'נט בחר אחרת"
         reasons = list(dict.fromkeys(t for _, t in outcomes))
         return "; ".join(reasons[:2]) + (" ועוד" if len(reasons) > 2 else "")
 
-    def _try_dish(self, menu: dict, recipe: dict) -> tuple[int, str]:
+    def _try_dish(self, menu: dict, recipe: dict, replacing: str | None = None) -> tuple[int, str]:
         """
-        מה קורה אם שמים את המנה בתפריט (במקום אחת המנות מאותו סוג).
-        מחזיר (דירוג, הסבר): 0 עובד, 1 מעל היעד, 2 מעל התקציב, 3 "לא אוהב", 4 אלרגיה/תזונה, 5 חסר מחיר.
+        מה קורה אם שמים את המנה בתפריט (במקום אחת המנות מאותו סוג, או במקום replacing).
+        מחזיר (דירוג, הסבר): 0 עובד, 1 מעל היעד או מוציא "אוהב/ת" אחר, 2 מעל התקציב, 3 "לא אוהב",
+        4 אלרגיה/תזונה, 5 חסר מחיר.
         """
         results = []
         for slot in self.slots:
             if slot[0] != recipe["category"] or recipe["name"] in menu[slot[0]]:
+                continue
+            if replacing is not None and self._dish_at(menu, slot) != replacing:
                 continue
             candidate = self._replace(menu, slot, recipe["name"])
             cost = self.calculate_cost(candidate)
@@ -464,6 +475,9 @@ class MenuTools:
                 results.append((2, f"{name}: התפריט היה עולה {cost['total_cost']:.0f} ש\"ח - מעל התקציב"))
             elif cost.get("within_target") is False:
                 results.append((1, f"{name}: התפריט היה עולה {cost['total_cost']:.0f} ש\"ח - מעל היעד"))
+            elif lost := self._lost_likes(menu, candidate):
+                # מג'דרה מכניסה אורז, אבל במקום תפוחי האדמה שמישהו אחר אוהב - זו לא "בחירה אחרת" של האג'נט
+                results.append((1, f"עם {name}, {lost[0]} היה יוצא מהתפריט"))
             else:
                 results.append((0, f"עם {name} התפריט היה עולה {cost['total_cost']:.0f} ש\"ח"))
         if not results and recipe["category"] not in self.request.courses:
@@ -547,6 +561,67 @@ class MenuTools:
             result["note"] = ("אין החלפה של מנה אחת או של שתי מנות שמוזילה את התפריט ושומרת על כל "
                               "האורחים. כנראה שזה התפריט הזול ביותר שאפשר להגיע אליו מכאן.")
         return result
+
+    def _lost_likes(self, menu: dict, candidate: dict) -> list[str]:
+        """"אוהב/ת" שיש בתפריט ולא היה אחרי ההחלפה: ["תפוחי אדמה (בת שנייה)"]."""
+        after = {(x["guest"], x["likes"]) for x in self.likes_report(self._parse_menu(candidate)[0]) if x["in_menu"]}
+        return [f"{x['likes']} ({x['guest']})" for x in self.likes_report(self._parse_menu(menu)[0])
+                if x["in_menu"] and (x["guest"], x["likes"]) not in after]
+
+    def likes_upgrade(self, menu: dict) -> list[dict]:
+        """
+        החלפות שמכניסות לתפריט עוד "אוהב/ת", בלי לשבור כלל ובלי לחרוג מהתקציב (ומהיעד, אם יש ועוד לא חרגו ממנו).
+        בכל צעד - ההחלפה שמוסיפה הכי הרבה, ובשוויון הזולה. רשימה ריקה = אי אפשר להוסיף עוד.
+        בצ'אט, האג'נט אישר תפריט שבו 4 העדפות לא נכנסו, למרות שכל אחת מהן הייתה אפשרית - גם כשהיא הוזילה אותו.
+        """
+        dishes, errors = self._parse_menu(menu)
+        if errors or not any(g.likes for g in self.request.guests):
+            return []
+        total = self.calculate_cost(menu)["total_cost"]
+        limit = self.request.target_budget or self.request.budget
+        limit = max(limit, total)  # כבר מעל היעד (כי לא הייתה ברירה) - לפחות לא להתייקר
+
+        def satisfied(m):
+            return sum(x["in_menu"] for x in self.likes_report(self._parse_menu(m)[0]))
+
+        def best_change(current, swaps):
+            """ההחלפה (של מנה אחת, או של שתיים יחד) שמוסיפה הכי הרבה, ובשוויון הזולה. None אם אין."""
+            score, best = satisfied(current), None
+            for candidate, changes in swaps:
+                new_total = self._valid_total(candidate)
+                if new_total is None or new_total > limit + 1e-9:
+                    continue
+                gain = satisfied(candidate) - score
+                if gain > 0 and (best is None or (gain, -new_total) > (best[0], -best[1])):
+                    best = (gain, new_total, candidate, changes)
+            return best
+
+        def singles(current):
+            for slot in self.slots:
+                for dish in self._alternatives(current, slot):
+                    yield self._replace(current, slot, dish), [(self._dish_at(current, slot), dish)]
+
+        def pairs(current):
+            # מג'דרה במקום תפוחי האדמה מכניסה אורז אבל מוציאה תפוחי אדמה - רק יחד עם עיקרית עם תפוחי אדמה זה מוסיף
+            for a, b in combinations(self.slots, 2):
+                for dish_a, dish_b in product(self._alternatives(current, a), self._alternatives(current, b)):
+                    if dish_a != dish_b:
+                        yield (self._replace(self._replace(current, a, dish_a), b, dish_b),
+                               [(self._dish_at(current, a), dish_a), (self._dish_at(current, b), dish_b)])
+
+        steps, current = [], menu
+        while True:
+            best = best_change(current, singles(current)) or best_change(current, pairs(current))
+            if best is None:
+                return steps
+            _, new_total, candidate, changes = best
+            before = {(x["guest"], x["likes"]) for x in self.likes_report(self._parse_menu(current)[0]) if x["in_menu"]}
+            added = [f"{x['guest']} אוהב/ת {x['likes']}" for x in self.likes_report(self._parse_menu(candidate)[0])
+                     if x["in_menu"] and (x["guest"], x["likes"]) not in before]
+            for i, (old, new) in enumerate(changes):  # ההוספות - בשורה של ההחלפה האחרונה בקבוצה
+                steps.append({"replace": old, "with": new, "new_total": new_total,
+                              "adds": added if i == len(changes) - 1 else []})
+            current = candidate
 
     # ---------- מתכונים (למשתמש - לא כלי של המודל) ----------
 

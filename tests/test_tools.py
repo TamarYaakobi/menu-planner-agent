@@ -360,6 +360,36 @@ class TestLikes(unittest.TestCase):
         mains = [r["name"] for r in tools.search_recipes("main", include_any=["שקשוקה"])["recipes"]]
         self.assertEqual(mains, ["שקשוקה"])  # לפי שם המנה
 
+    def test_likes_upgrade(self):
+        tools = make_tools(guests=[{"name": "דודה", "likes": ["שקשוקה", "ארטישוק"]}])
+        steps = tools.likes_upgrade(VALID_MENU)
+        self.assertEqual([(s["with"], s["adds"]) for s in steps], [("שקשוקה", ["דודה אוהב/ת שקשוקה"])])
+        after = _swap(VALID_MENU, steps[0]["replace"], "שקשוקה")
+        self.assertTrue(tools.finalize_menu(after)["approved"])
+        self.assertEqual(tools.likes_upgrade(after), [])  # ארטישוק - אין במאגר
+
+    def test_likes_upgrade_tries_pairs(self):
+        # מהצ'אט: מג'דרה במקום תפוחי האדמה מכניסה אורז אבל מוציאה תפוחי אדמה. רק יחד עם עיקרית
+        # שיש בה תפוחי אדמה זה מוסיף - וההסבר אומר מה היה יוצא, לא "האג'נט בחר אחרת"
+        guests = [{"name": "בת", "likes": ["תפוחי אדמה", "אורז"]}]
+        menu = {"main": ["שניצל עוף", "קארי עדשים בחלב קוקוס"], "side": ["תפוחי אדמה אפויים ברוזמרין"],
+                "vegetable": ["סלט ירקות קצוץ"], "dessert": ["סלט פירות"]}
+        tools = make_tools(guests=guests)
+        rice = next(x for x in tools.preferences_report(menu)["likes"] if x["likes"] == "אורז")
+        self.assertIn("תפוחי אדמה (בת) היה יוצא מהתפריט", rice["reason"])
+        steps = tools.likes_upgrade(menu)
+        for step in steps:
+            menu = _swap(menu, step["replace"], step["with"])
+        self.assertTrue(all(x["in_menu"] for x in tools.check_guests(menu)["likes"]))
+        self.assertTrue(tools.finalize_menu(menu)["approved"])
+
+    def test_likes_upgrade_respects_rules_and_budget(self):
+        allergic = make_tools(guests=[{"name": "דנה", "allergies": ["nuts"], "likes": ["אגוזי מלך"]}])
+        self.assertEqual(allergic.likes_upgrade(VALID_MENU), [])
+        cost = make_tools().calculate_cost(VALID_MENU)["total_cost"]
+        tight = make_tools(budget=cost, guests=[{"name": "גיל", "likes": ["סלמון"]}])
+        self.assertEqual(tight.likes_upgrade(VALID_MENU), [])  # סלמון יקר מדי
+
     def test_finalize_reports_likes(self):
         tools = make_tools(guests=[{"name": "דודה", "likes": ["חסה"]}])
         result = tools.finalize_menu(dict(VALID_MENU, vegetable=["סלט חסה עם אגוזי מלך"]))

@@ -31,6 +31,7 @@ MAX_STEPS = 15         # מגבלת קריאות למודל - מונעת לול�
 MAX_NUDGES = 1         # כמה פעמים להזכיר למודל להמשיך אם עצר בלי לסיים
 LOW_STEPS_WARNING = 3  # כשנשארים כך צעדים, מזהירים את המודל כדי שיחליט אם לוותר
 MAX_QUESTION_ROUNDS = 3  # כמה פעמים לשאול את המשתמש על מידע חסר במטרה
+MAX_LIKES_CHECKS = 2   # כמה פעמים לדחות אישור כי אפשר לשלב עוד "אוהב/ת"
 DEFAULT_REQUEST = Path(__file__).parent / "examples" / "friday_dinner.json"
 
 SYSTEM_PROMPT = """אתה אג'נט שמתכנן תפריט לארוחה משפחתית.
@@ -178,6 +179,7 @@ class MenuAgent:
         self.steps_used = 0
         self.failure_reason: str | None = None
         self.best_cost: dict | None = None  # התפריט התקין הזול ביותר שנבדק - לבדיקת ויתור ולדיווח
+        self.likes_checks = 0  # כמה פעמים אישור נדחה כי אפשר היה לשלב עוד "אוהב/ת"
 
     def _emit(self, kind: str, **data):
         self.on_event(kind, data)
@@ -259,6 +261,8 @@ class MenuAgent:
 
         if name == "report_failure":
             result = self._check_give_up(args)
+        elif name == "finalize_menu" and (missed := self._missed_likes(args.get("menu"))):
+            result = missed
         elif name not in MENU_TOOLS:
             result = {"error": f"אין כלי בשם '{name}'"}
         else:
@@ -281,6 +285,30 @@ class MenuAgent:
             return
         if self.tools.check_guests(menu).get("all_satisfied"):
             self.best_cost = {"menu": menu, "total_cost": total, "budget": self.tools.request.budget}
+
+    def _missed_likes(self, menu) -> dict | None:
+        """
+        גם "אוהב/ת" נבדק בקוד לפני אישור: אם החלפות מכניסות עוד העדפות בלי לשבור כלל ובלי לחרוג מהתקציב,
+        האישור נדחה עם ההחלפות. הוראה ב-prompt לא הספיקה - בצ'אט נשארו בחוץ 4 העדפות אפשריות.
+        לכל היותר MAX_LIKES_CHECKS פעמים, ולא כשנגמרים הצעדים: העדפה רכה לא שווה תפריט שלא אושר.
+        """
+        if (not isinstance(menu, dict) or self.likes_checks >= MAX_LIKES_CHECKS
+                or self.max_steps - self.steps_used <= LOW_STEPS_WARNING):
+            return None
+        cost = self.tools.calculate_cost(menu)
+        if "error" in cost or not cost["complete"] or not cost["within_budget"] \
+                or not self.tools.check_guests(menu)["all_satisfied"]:
+            return None  # finalize_menu ידחה בעצמו, עם הסיבות
+        steps = self.tools.likes_upgrade(menu)
+        if not steps:
+            return None
+        self.likes_checks += 1
+        changes = [f"להחליף את '{s['replace']}' ב-'{s['with']}'" + (f" ({', '.join(s['adds'])})" if s["adds"] else "")
+                   for s in steps]
+        return {"approved": False, "reasons": [
+            "התפריט תקין, אבל אפשר לשלב בו עוד העדפות של אורחים - בלי לשבור כלל ובלי לחרוג מהתקציב: "
+            + "; ".join(changes) + f". העלות אחרי כל ההחלפות: {steps[-1]['new_total']:.0f} ש\"ח. "
+            "בצע את ההחלפות (הן כבר נבדקו) וקרא שוב ל-finalize_menu."]}
 
     def _check_give_up(self, args: dict) -> dict:
         """
@@ -465,7 +493,7 @@ def _confirm_goal(goal, interactive: bool, auto_yes: bool) -> dict | str | None:
     for title, items in (("הנחות שעשיתי", goal.assumptions),
                          ("⚠️ הגבלות שהמערכת לא יודעת לבדוק - התפריט לא מתחשב בהן", goal.unsupported),
                          ("⚠️ ייתכן שלא הבנתי נכון", goal.warnings),
-                         ("לא מופיע באף מנה במאגר", unknown_dislikes(goal.request)),
+                         ("לא אוהב/ת - אין באף מתכון, אז ממילא לא יהיה בתפריט", unknown_dislikes(goal.request)),
                          ("🤍 אוהב/ת - אבל אין מתכון כזה במאגר, ולכן לא ישולב", unknown_likes(goal.request))):
         if items:
             print(f"\n{title}:\n" + "\n".join(f"  - {item}" for item in items))
