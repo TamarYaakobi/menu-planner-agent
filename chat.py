@@ -19,6 +19,7 @@ from agent import MenuAgent, short_args, summarize
 from chat_logic import (STATE_KEYS, cost_answer, delete_conversation, diners, format_recipe, is_cost_question, is_thanks,
                         is_yes, list_conversations, load_conversation, menu_card_html, new_conversation_id,
                         requested_dishes, save_conversation, shopping_html, steps_html, user_html, wants_recipes)
+from branding import ICON, sidebar_signature
 from hebrew_page import mark_page_hebrew
 from goal_parser import parse_goal, unknown_dislikes, unknown_likes
 from llm import ConfigError, create_client, daily_quota_message, fallback_models
@@ -34,7 +35,7 @@ WELCOME = """היי! אני אג'נט שמתכנן תפריט לארוחה 🍽�
 
 אני אגיד לך איך הבנתי, ואחרי שתאשרי - אתכנן תפריט שעומד בתקציב, עם רשימת קניות ומתכונים."""
 
-st.set_page_config(page_title="מתכנן תפריט", page_icon="🍽️")
+st.set_page_config(page_title="מתכנן תפריט", page_icon=ICON)
 mark_page_hebrew()  # אחרת הדפדפן "מתרגם" את העברית ומשבש אותה
 st.markdown("""<style>
 @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&display=swap');
@@ -341,6 +342,7 @@ with st.sidebar:
                         on_click=load, args=(conversation["id"],))
         delete_col.button("🗑", key=f"delete_{conversation['id']}", help="מחיקת השיחה",
                           on_click=delete, args=(conversation["id"],))
+    sidebar_signature()
 
 st.markdown('<div class="app-title"><h1>🍽️ מתכנן תפריט</h1>'
             '<p>מי מגיע, מה התקציב ומה כל אחד אוכל - ואני אתכנן ארוחה שמתאימה לכולם</p></div>',

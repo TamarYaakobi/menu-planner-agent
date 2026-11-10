@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from openai import APIError
 
 from agent import MAX_STEPS, SYSTEM_PROMPT, describe_request, short_args, summarize
+from branding import ICON, sidebar_signature
 from evaluate import VERDICT_ICON, find_best_menu, run_scenario
 from hebrew_page import mark_page_hebrew
 from goal_parser import parse_goal, unknown_dislikes
@@ -25,7 +26,7 @@ from scenarios import SCENARIOS
 from tools import (ALLERGENS, CATEGORIES, DEFAULT_COURSES, DIETS, MAX_PER_COURSE, MenuRequest, MenuTools,
                    describe_courses)
 
-st.set_page_config(page_title="בודק האג'נט", page_icon="🍽️", layout="wide")
+st.set_page_config(page_title="בודק האג'נט", page_icon=ICON, layout="wide")
 mark_page_hebrew()  # אחרת הדפדפן "מתרגם" את העברית ומשבש אותה
 st.markdown("""<style>
 .stApp, [data-testid="stSidebar"] { direction: rtl; text-align: right; }
@@ -349,6 +350,7 @@ with st.sidebar:
     model = st.text_input("מודל", value=os.getenv("LLM_MODEL") or DEFAULT_MODEL,
                           help="אפשר להחליף מודל אם נגמרה המכסה של הנוכחי")
     max_steps = st.slider("מקסימום צעדים", 5, 30, MAX_STEPS)
+    sidebar_signature()
 
 st.title("🍽️ בודק האג'נט")
 tab_agent, tab_sandbox, tab_batch = st.tabs(["🤖 הרצת האג'נט", "🧪 ארגז חול לכלים", "📋 תרחישי קצה"])
